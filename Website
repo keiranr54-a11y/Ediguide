@@ -1,0 +1,489 @@
+university-ranking-website/
+│
+├── index.html
+├── README.md
+│
+├── css/
+│   └── style.css
+│
+├── js/
+│   └── main.js
+│
+└── data/
+    └── rankings.json
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>University Rankings</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header>
+    <h1>University Rankings</h1>
+    <p>My first university ranking website 🎓</p>
+</header>
+
+<main>
+    <table id="ranking-table">
+        <thead>
+            <tr>
+                <th>Rank</th>
+                <th>University</th>
+                <th>Country</th>
+                <th>Score</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Rankings will be loaded here -->
+        </tbody>
+    </table>
+</main>
+
+<footer>
+    <p>© 2026 | Built by Me</p>
+</footer>
+
+<script src="js/main.js"></script>
+</body>
+</html>
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    background-color: #f4f6f8;
+    color: #333;
+}
+
+header {
+    background-color: #1e3a8a;
+    color: white;
+    padding: 20px;
+    text-align: center;
+}
+
+main {
+    padding: 20px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+}
+
+th, td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+th {
+    background-color: #e5e7eb;
+}
+
+tr:hover {
+    background-color: #f1f5f9;
+}
+
+footer {
+    text-align: center;
+    padding: 10px;
+    font-size: 0.9em;
+    color: #666;
+}
+[
+    {
+        "rank": 1,
+        "university": "Harvard University",
+        "country": "USA",
+        "score": 98.5
+    },
+    {
+        "rank": 2,
+        "university": "University of Oxford",
+        "country": "UK",
+        "score": 97.8
+    },
+    {
+        "rank": 3,
+        "university": "Stanford University",
+        "country": "USA",
+        "score": 97.2
+    }
+]
+# University Ranking Website 🎓
+
+This is a simple university ranking website built using HTML, CSS, and JavaScript.
+
+## Features
+- Displays a university ranking table
+- Data loaded from a JSON file
+- Clean and simple layout
+
+## Future Plans
+- Add search and filters
+- Add multiple ranking categories
+- Connect to a backend or database
+
+## How to Run
+Just open `index.html` in your browser.
+/* main.js
+   Handles:
+   - fetching ranking data
+   - rendering table
+   - search, filters, sorting
+   - storing local notes (localStorage)
+   - placeholder rating UI (stored local)
+*/
+
+/* ---------- Utility helpers ---------- */
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+/* ---------- App state ---------- */
+const state = {
+  data: [],
+  filtered: [],
+  sort: 'rank-asc'
+};
+
+/* ---------- Elements ---------- */
+const tableBody = $('#ranking-table tbody');
+const searchInput = $('#search-input');
+const countryFilter = $('#country-filter');
+const rankMin = $('#rank-min');
+const rankMax = $('#rank-max');
+const sortSelect = $('#sort-select');
+const resetBtn = $('#reset-btn');
+const resultCount = $('#result-count');
+const activeFilters = $('#active-filters');
+
+const NOTES_KEY = 'ediguide_notes_v1';
+const RATINGS_KEY = 'ediguide_ratings_v1';
+
+/* ---------- Load data ---------- */
+/* This site uses a local JSON file. Add more data as needed. */
+async function loadData() {
+  try {
+    const res = await fetch('data/rankings.json');
+    const data = await res.json();
+    state.data = data;
+    state.filtered = data.slice();
+    initFilters();
+    applySortAndRender();
+  } catch (err) {
+    console.error('Failed to load rankings:', err);
+    resultCount.textContent = 'Failed to load data';
+  }
+}
+
+/* ---------- Filters init ---------- */
+function initFilters() {
+  const countries = Array.from(new Set(state.data.map(d => d.country))).sort();
+  countries.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    countryFilter.appendChild(opt);
+  });
+}
+
+/* ---------- Rendering ---------- */
+function renderTable(list) {
+  tableBody.innerHTML = '';
+  if (!list.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="6">No results</td>`;
+    tableBody.appendChild(tr);
+    resultCount.textContent = '0 results';
+    return;
+  }
+
+  resultCount.textContent = `${list.length} result${list.length>1?'s':''}`;
+
+  list.forEach(item => {
+    const tr = document.createElement('tr');
+
+    // Create rating display: localStorage-backed
+    const ratings = JSON.parse(localStorage.getItem(RATINGS_KEY) || '{}');
+    const avgRating = ratings[item.university]?.avg ?? null;
+
+    tr.innerHTML = `
+      <td>${item.rank}</td>
+      <td class="univ-cell">${escapeHtml(item.university)}</td>
+      <td>${escapeHtml(item.country)}</td>
+      <td>${item.score}</td>
+      <td class="ad-cell"><div class="ad-placeholder small">Ad slot</div></td>
+      <td class="rating-cell" data-univ="${escapeHtml(item.university)}">
+        ${renderStars(avgRating)}
+      </td>
+    `;
+
+    tableBody.appendChild(tr);
+  });
+
+  // wire up rating click handlers (stars)
+  $$('.rating-cell .star').forEach(star => {
+    star.addEventListener('click', (e) => {
+      const cell = e.target.closest('.rating-cell');
+      const univ = cell.dataset.univ;
+      const value = Number(e.target.dataset.value);
+      saveRating(univ, value);
+      applySortAndRender(); // re-render to update average
+    });
+  });
+
+  updateActiveFiltersDisplay();
+}
+
+/* ---------- Escape helper ---------- */
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, s => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[s]));
+}
+
+/* ---------- Stars UI ---------- */
+function renderStars(avg) {
+  // if no rating, show 0 highlighted
+  let html = '';
+  for (let i=1;i<=5;i++) {
+    const cls = (avg && avg >= i - 0.5) ? 'star active' : 'star';
+    html += `<span class="${cls}" data-value="${i}" role="button" aria-label="Rate ${i}">${'★'}</span>`;
+  }
+  if (avg) html += `<div class="rating-note">(${avg.toFixed(1)})</div>`;
+  return html;
+}
+
+/* ---------- Rating storage (local) ---------- */
+function saveRating(university, value) {
+  const all = JSON.parse(localStorage.getItem(RATINGS_KEY) || '{}');
+  if (!all[university]) all[university] = { sum: 0, count: 0, avg: 0 };
+  all[university].sum += value;
+  all[university].count += 1;
+  all[university].avg = all[university].sum / all[university].count;
+  localStorage.setItem(RATINGS_KEY, JSON.stringify(all));
+  alert(`Thanks! Recorded ${value}★ for ${university} (stored locally).`);
+}
+
+/* ---------- Filtering & Sorting logic ---------- */
+function applyFilters() {
+  const q = (searchInput.value || '').trim().toLowerCase();
+  const country = countryFilter.value;
+  const min = Number(rankMin.value) || null;
+  const max = Number(rankMax.value) || null;
+
+  state.filtered = state.data.filter(item => {
+    if (q) {
+      const inName = item.university.toLowerCase().includes(q);
+      if (!inName) return false;
+    }
+    if (country && item.country !== country) return false;
+    if (min && item.rank < min) return false;
+    if (max && item.rank > max) return false;
+    return true;
+  });
+}
+
+function applySortAndRender() {
+  applyFilters();
+
+  // Sorting
+  const s = sortSelect.value;
+  state.filtered.sort((a,b) => {
+    switch(s) {
+      case 'rank-asc': return a.rank - b.rank;
+      case 'rank-desc': return b.rank - a.rank;
+      case 'score-desc': return b.score - a.score;
+      case 'score-asc': return a.score - b.score;
+      case 'name-asc': return a.university.localeCompare(b.university);
+      case 'name-desc': return b.university.localeCompare(a.university);
+      case 'country-asc': return a.country.localeCompare(b.country);
+      default: return a.rank - b.rank;
+    }
+  });
+
+  renderTable(state.filtered);
+}
+
+/* ---------- Active filters display ---------- */
+function updateActiveFiltersDisplay() {
+  const parts = [];
+  if (searchInput.value) parts.push(`Query: "${searchInput.value}"`);
+  if (countryFilter.value) parts.push(`Country: ${countryFilter.value}`);
+  if (rankMin.value || rankMax.value) {
+    parts.push(`Rank: ${rankMin.value || '1'}–${rankMax.value || '∞'}`);
+  }
+  activeFilters.innerHTML = parts.length ? parts.map(p => `<li>${p}</li>`).join('') : '<li>None</li>';
+}
+
+/* ---------- Notes (localStorage) ---------- */
+function loadNotes() {
+  const raw = localStorage.getItem(NOTES_KEY);
+  const arr = raw ? JSON.parse(raw) : [];
+  return arr;
+}
+function saveNote(noteObj) {
+  const arr = loadNotes();
+  arr.unshift(noteObj);
+  localStorage.setItem(NOTES_KEY, JSON.stringify(arr));
+  renderNotes();
+}
+function renderNotes() {
+  const notes = loadNotes();
+  const container = $('#notes-list');
+  if (!notes.length) {
+    container.innerHTML = `<p>No notes yet. Yours are stored locally in this browser.</p>`;
+    return;
+  }
+  container.innerHTML = notes.map(n => `
+    <div class="note">
+      <div class="note-meta"><strong>${escapeHtml(n.name)}</strong> ${n.univ?`— ${escapeHtml(n.univ)}`:''} <span class="date">(${new Date(n.ts).toLocaleString()})</span></div>
+      <div class="note-body">${escapeHtml(n.text)}</div>
+    </div>
+  `).join('');
+}
+
+/* ---------- Event bindings ---------- */
+function bindEvents() {
+  [searchInput, countryFilter, rankMin, rankMax].forEach(el => {
+    el.addEventListener('input', () => {
+      applySortAndRender();
+    });
+  });
+
+  sortSelect.addEventListener('change', () => applySortAndRender());
+  resetBtn.addEventListener('click', () => {
+    searchInput.value=''; countryFilter.value=''; rankMin.value=''; rankMax.value=''; sortSelect.value='rank-asc';
+    applySortAndRender();
+  });
+
+  // note form
+  $('#note-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const note = {
+      name: $('#note-name').value || 'anon',
+      univ: $('#note-univ').value || '',
+      text: $('#note-text').value || '',
+      ts: Date.now()
+    };
+    saveNote(note);
+    $('#note-form').reset();
+    alert('Saved locally. Notes are stored only in your browser (no server).');
+  });
+
+  // set year in footer
+  $('#year').textContent = new Date().getFullYear();
+}
+
+/* ---------- Initialise ---------- */
+function init() {
+  bindEvents();
+  renderNotes();
+  loadData();
+}
+
+document.addEventListener('DOMContentLoaded', init);
+[
+  { "rank": 1, "university": "Massachusetts Institute of Technology", "country": "USA", "score": 5.246 },
+  { "rank": 2, "university": "Princeton University", "country": "USA", "score": 8.904 },
+  { "rank": 3, "university": "University of Oxford", "country": "UK", "score": 10.48 },
+  { "rank": 4, "university": "University of Cambridge", "country": "UK", "score": 12.05 },
+  { "rank": 5, "university": "Yale University", "country": "USA", "score": 15.61 },
+  { "rank": 6, "university": "Harvard University", "country": "USA", "score": 15.73 },
+  { "rank": 7, "university": "Tsinghua University", "country": "China", "score": 17.11 },
+  { "rank": 8, "university": "ETH Zurich", "country": "Switzerland", "score": 23.00 },
+  { "rank": 9, "university": "Technical University of Munich (TUM)", "country": "Germany", "score": 24.35 },
+  { "rank": 10, "university": "University of Tokyo", "country": "Japan", "score": 24.38 },
+  { "rank": 11, "university": "National University of Singapore", "country": "Singapore", "score": 26.35 },
+  { "rank": 12, "university": "University of Toronto", "country": "Canada", "score": 26.61 },
+  { "rank": 13, "university": "University of Melbourne", "country": "Australia", "score": 27.50 },
+  { "rank": 14, "university": "University of California, Berkeley", "country": "USA", "score": 27.57 },
+  { "rank": 15, "university": "Columbia University", "country": "USA", "score": 30.37 },
+  { "rank": 16, "university": "Peking University", "country": "China", "score": 30.82 },
+  { "rank": 17, "university": "University of Pennsylvania", "country": "USA", "score": 32.70 },
+  { "rank": 18, "university": "University of Copenhagen", "country": "Denmark", "score": 37.92 },
+  { "rank": 19, "university": "University of Hong Kong", "country": "Hong Kong", "score": 40.8 },
+  { "rank": 20, "university": "Imperial College London", "country": "UK", "score": 40.23 },
+  { "rank": 21, "university": "Kyoto University", "country": "Japan", "score": 43.52 },
+  { "rank": 22, "university": "Ludwig Maximilian University of Munich (LMU)", "country": "Germany", "score": 45.20 },
+  { "rank": 23, "university": "University of British Columbia", "country": "Canada", "score": 46.69 },
+  { "rank": 24, "university": "UCL (University College London)", "country": "UK", "score": 47.02 },
+  { "rank": 25, "university": "EPFL (École Polytechnique Fédérale de Lausanne)", "country": "Switzerland", "score": 47.73 },
+  { "rank": 26, "university": "Nanyang Technological University", "country": "Singapore", "score": 48.32 },
+  { "rank": 27, "university": "California Institute of Technology", "country": "USA", "score": 49.41 },
+  { "rank": 28, "university": "Leiden University", "country": "Netherlands", "score": 49.45 },
+  { "rank": 29, "university": "Utrecht University", "country": "Netherlands", "score": 52.66 },
+  { "rank": 30, "university": "University of New South Wales", "country": "Australia", "score": 53.05 },
+  { "rank": 31, "university": "Cornell University", "country": "USA", "score": 53.13 },
+  { "rank": 32, "university": "University of Queensland", "country": "Australia", "score": 54.88 },
+  { "rank": 33, "university": "London School of Economics (LSE)", "country": "UK", "score": 57.05 },
+  { "rank": 34, "university": "McGill University", "country": "Canada", "score": 59.50 },
+  { "rank": 35, "university": "KU Leuven", "country": "Belgium", "score": 62.12 },
+  { "rank": 36, "university": "Zhejiang University", "country": "China", "score": 61.29 },
+  { "rank": 37, "university": "Seoul National University", "country": "South Korea", "score": 61.89 },
+  { "rank": 38, "university": "University of Sydney", "country": "Australia", "score": 62.85 },
+  { "rank": 39, "university": "Heidelberg University", "country": "Germany", "score": 62.97 },
+  { "rank": 40, "university": "University of Amsterdam", "country": "Netherlands", "score": 63.48 },
+  { "rank": 41, "university": "Chinese University of Hong Kong", "country": "Hong Kong", "score": 69.75 },
+  { "rank": 42, "university": "Monash University", "country": "Australia", "score": 66.83 },
+  { "rank": 43, "university": "Shanghai Jiao Tong University", "country": "China", "score": 67.59 },
+  { "rank": 44, "university": "Fudan University", "country": "China", "score": 74.90 },
+  { "rank": 45, "university": "University of Michigan", "country": "USA", "score": 75.02 },
+  { "rank": 46, "university": "Northwestern University", "country": "USA", "score": 77.81 },
+  { "rank": 47, "university": "University of Helsinki", "country": "Finland", "score": 81.77 },
+  { "rank": 48, "university": "University of São Paulo", "country": "Brazil", "score": 85.37 },
+  { "rank": 49, "university": "Duke University", "country": "USA", "score": 82.94 },
+  { "rank": 50, "university": "University of Warwick", "country": "UK", "score": 83.14 },
+  { "rank": 51, "university": "University of California, San Diego", "country": "USA", "score": 84.41 },
+  { "rank": 52, "university": "Lund University", "country": "Sweden", "score": 83.86 },
+  { "rank": 53, "university": "University of Zurich", "country": "Switzerland", "score": 84.25 },
+  { "rank": 54, "university": "University of Edinburgh", "country": "UK", "score": 85.83 },
+  { "rank": 55, "university": "Erasmus University Rotterdam", "country": "Netherlands", "score": 86.15 },
+  { "rank": 56, "university": "University of Bristol", "country": "UK", "score": 87.57 },
+  { "rank": 57, "university": "University of Chicago", "country": "USA", "score": 87.96 },
+  { "rank": 58, "university": "IIT Delhi", "country": "India", "score": 94.8 },
+  { "rank": 59, "university": "King's College London", "country": "UK", "score": 94.53 },
+  { "rank": 60, "university": "Polytechnic Institute of Paris", "country": "France", "score": 95.1 },
+  { "rank": 61, "university": "Washington University in St. Louis", "country": "USA", "score": 96.07 },
+  { "rank": 62, "university": "Uppsala University", "country": "Sweden", "score": 97.28 },
+  { "rank": 63, "university": "Brown University", "country": "USA", "score": 98.50 },
+  { "rank": 64, "university": "Humboldt University of Berlin", "country": "Germany", "score": 98.65 },
+  { "rank": 65, "university": "Johns Hopkins University", "country": "USA", "score": 100.3 },
+  { "rank": 66, "university": "Durham University", "country": "UK", "score": 102.6 },
+  { "rank": 67, "university": "Yonsei University", "country": "South Korea", "score": 104.6 },
+  { "rank": 68, "university": "University of Auckland", "country": "New Zealand", "score": 106.1 },
+  { "rank": 69, "university": "University of California, Los Angeles", "country": "USA", "score": 106.9 },
+  { "rank": 70, "university": "Moscow State University", "country": "Russia", "score": 106.2 },
+  { "rank": 71, "university": "National Taiwan University", "country": "Taiwan", "score": 106.5 },
+  { "rank": 72, "university": "University of Barcelona", "country": "Spain", "score": 106.7 },
+  { "rank": 73, "university": "Australian National University", "country": "Australia", "score": 109.9 },
+  { "rank": 74, "university": "Technical University of Delft", "country": "Netherlands", "score": 112.6 },
+  { "rank": 75, "university": "Institut National du Service Public", "country": "France", "score": 112.2 },
+  { "rank": 76, "university": "Nanjing University", "country": "China", "score": 112.5 },
+  { "rank": 77, "university": "Georgia Institute of Technology", "country": "USA", "score": 113.1 },
+  { "rank": 78, "university": "Emory University", "country": "USA", "score": 113.2 },
+  { "rank": 79, "university": "Universidad Nacional Autónoma de México (UNAM)", "country": "Mexico", "score": 113.33 },
+  { "rank": 80, "university": "University of St Andrews", "country": "UK", "score": 114.0 },
+  { "rank": 81, "university": "Hong Kong University of Science and Technology", "country": "Hong Kong", "score": 115.8 },
+  { "rank": 82, "university": "University of Bologna", "country": "Italy", "score": 115.6 },
+  { "rank": 83, "university": "Aarhus University", "country": "Denmark", "score": 117.0 },
+  { "rank": 84, "university": "Tokyo Institute of Technology", "country": "Japan", "score": 117.6 },
+  { "rank": 85, "university": "University of Sheffield", "country": "UK", "score": 118.1 },
+  { "rank": 86, "university": "University of Alberta", "country": "Canada", "score": 118.4 },
+  { "rank": 87, "university": "Rice University", "country": "USA", "score": 119.5 },
+  { "rank": 88, "university": "National University of Malaysia", "country": "Malaysia", "score": 120.1 },
+  { "rank": 89, "university": "University of California, Davis", "country": "USA", "score": 122.8 },
+  { "rank": 90, "university": "University of Southern California", "country": "USA", "score": 123.7 },
+  { "rank": 91, "university": "Free University of Berlin", "country": "Germany", "score": 127.7 },
+  { "rank": 92, "university": "Tohoku University", "country": "Japan", "score": 128.1 },
+  { "rank": 93, "university": "University of Birmingham", "country": "UK", "score": 129.8 },
+  { "rank": 94, "university": "Hong Kong Polytechnic University", "country": "Hong Kong", "score": 129.2 },
+  { "rank": 95, "university": "University of Geneva", "country": "Switzerland", "score": 129.3 },
+  { "rank": 96, "university": "University of Southampton", "country": "UK", "score": 131.9 },
+  { "rank": 97, "university": "University of Oslo", "country": "Norway", "score": 133.0 },
+  { "rank": 98, "university": "University of Illinois Urbana-Champaign", "country": "USA", "score": 134.1 },
+  { "rank": 99, "university": "University of Manchester", "country": "UK", "score": 134.2 },
+  { "rank": 100, "university": "Sapienza University of Rome", "country": "Italy", "score": 134.2 }
+]

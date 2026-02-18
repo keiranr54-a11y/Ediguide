@@ -1,489 +1,1051 @@
-university-ranking-website/
-│
-├── index.html
-├── README.md
-│
-├── css/
-│   └── style.css
-│
-├── js/
-│   └── main.js
-│
-└── data/
-    └── rankings.json
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>University Rankings</title>
-    <link rel="stylesheet" href="css/style.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ediguide — UK Degree Rankings & ROI</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Playfair+Display:wght@400;600;700&display=swap" rel="stylesheet">
+
+  <!-- Favicons -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📘</text></svg>">
+
+  <meta name="description" content="Ediguide — Composite rankings & ROI for UK degrees. Compare universities, estimate ROI, and pick the best degree for your future.">
+
+  <style>
+    /* ---------------------------------------------
+       Ediguide — Styles
+       - Modern editorial aesthetic inspired by the user's reference
+       - Variable driven, accessible sizes
+       --------------------------------------------- */
+    :root{
+      --bg:#f0f4ec;                /* warm cream */
+      --muted:#9aa98a;             /* sage */
+      --muted-2:#7f8b6f;
+      --accent:#bcd39b;            /* soft lime */
+      --accent-2:#9bb987;
+      --ink:#2d332d;
+      --card:#ffffff;
+      --glass: rgba(255,255,255,0.6);
+      --radius:18px;
+      --radius-sm:12px;
+      --container:1200px;
+      --max-content-width:1050px;
+      --shadow: 0 6px 20px rgba(33,36,30,0.08);
+      --glass-shadow: 0 6px 30px rgba(45,51,45,0.06);
+      --muted-text: #6b6f63;
+    }
+
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      color:var(--ink);
+      background:linear-gradient(180deg, #d6e0cc 0%, #f0f4ec 60%);
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      line-height:1.5;
+      -webkit-tap-highlight-color:transparent;
+    }
+
+    /* Layout */
+    .wrap{
+      max-width:var(--container);
+      margin:36px auto;
+      padding:28px;
+    }
+
+    header.brand{
+      display:flex;
+      align-items:center;
+      gap:22px;
+      justify-content:space-between;
+      margin-bottom:22px;
+    }
+
+    /* Logo / brand */
+    .logo{
+      display:flex;
+      align-items:center;
+      gap:14px;
+      text-decoration:none;
+      color:var(--ink);
+    }
+    .logo-mark{
+      width:72px;
+      height:72px;
+      border-radius:14px;
+      background:linear-gradient(135deg,var(--accent), var(--muted));
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      box-shadow:var(--glass-shadow);
+      flex-shrink:0;
+    }
+    .logo-mark svg{width:44px;height:44px}
+    .brand-title{
+      display:flex;
+      flex-direction:column;
+      line-height:1;
+    }
+    .brand-title .word{
+      font-family:"Playfair Display", serif;
+      font-size:22px;
+      font-weight:700;
+      letter-spacing:0.6px;
+    }
+    .brand-title .tag{
+      font-size:12px;
+      color:var(--muted-text)
+    }
+
+    /* top navigation / actions */
+    .nav-actions{
+      display:flex;
+      gap:12px;
+      align-items:center;
+    }
+    .btn{
+      appearance:none;
+      border:0;
+      padding:10px 16px;
+      border-radius:12px;
+      font-weight:600;
+      cursor:pointer;
+      background:var(--muted);
+      color:white;
+      box-shadow:var(--shadow);
+      transition:transform .12s ease, box-shadow .12s ease;
+    }
+    .btn:active{transform:translateY(1px)}
+    .btn.secondary{
+      background:transparent;
+      color:var(--muted-2);
+      border:1px solid rgba(80,90,74,0.06);
+      box-shadow:none;
+    }
+
+    /* HERO */
+    .hero{
+      display:grid;
+      grid-template-columns: 1fr 420px;
+      gap:28px;
+      align-items:stretch;
+      margin-bottom:26px;
+    }
+
+    .hero-card{
+      background:linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0.85));
+      border-radius:var(--radius);
+      padding:28px;
+      box-shadow:var(--glass-shadow);
+      min-height:320px;
+      display:flex;
+      flex-direction:column;
+      gap:18px;
+    }
+
+    .hero h1{
+      font-family:"Playfair Display", serif;
+      font-size:34px;
+      margin:0;
+      color:var(--muted-2);
+      letter-spacing:-0.2px;
+    }
+    .hero p.lead{
+      margin:0;
+      color:var(--muted-text);
+      max-width:64ch;
+    }
+
+    /* search / selector */
+    .searchbar{
+      display:flex;
+      gap:12px;
+      margin-top:auto;
+      align-items:center;
+    }
+    .field{
+      background:var(--card);
+      padding:12px 14px;
+      border-radius:12px;
+      border:1px solid rgba(40,45,40,0.04);
+      box-shadow:var(--shadow);
+      display:flex;
+      gap:10px;
+      align-items:center;
+      min-width:0;
+    }
+    .field input, .field select{
+      border:0;
+      outline:0;
+      font-size:15px;
+      background:transparent;
+      width:100%;
+    }
+    .pill{
+      padding:6px 10px;
+      background:var(--accent-2);
+      color:white;
+      border-radius:999px;
+      font-weight:600;
+      font-size:13px;
+    }
+
+    /* hero right — image & highlights */
+    .hero-side{
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+    }
+    .image-stack{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:12px;
+    }
+    .image-stack img{
+      width:100%;
+      height:120px;
+      object-fit:cover;
+      border-radius:12px;
+      box-shadow:var(--shadow);
+      border:6px solid rgba(255,255,255,0.45);
+    }
+    .stat-row{
+      display:flex;
+      gap:14px;
+      justify-content:space-between;
+      align-items:center;
+    }
+    .stat{
+      background:linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0.45));
+      border-radius:12px;
+      padding:10px 12px;
+      min-width:0;
+      box-shadow:var(--glass-shadow);
+    }
+    .stat .num{font-weight:700; font-size:18px; color:var(--muted-2)}
+    .stat .lbl{font-size:12px; color:var(--muted-text)}
+
+    /* Main content */
+    main{
+      margin-top:18px;
+      display:flex;
+      gap:28px;
+      align-items:flex-start;
+    }
+
+    /* Left column (content) */
+    .col-main{
+      flex:1;
+      max-width:var(--max-content-width);
+      display:flex;
+      flex-direction:column;
+      gap:22px;
+    }
+
+    /* Card grid for features */
+    .features{
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap:14px;
+    }
+    .feature{
+      background:var(--card);
+      border-radius:var(--radius-sm);
+      padding:18px;
+      box-shadow:var(--shadow);
+      min-height:120px;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    .feature h3{
+      margin:0;
+      font-size:16px;
+      font-weight:700;
+      font-family:"Playfair Display", serif;
+      color:var(--muted-2);
+    }
+    .feature p{margin:0;color:var(--muted-text); font-size:14px}
+
+    /* Rankings module */
+    .module{
+      background:transparent;
+      border-radius:var(--radius);
+      padding:18px;
+    }
+    .panel{
+      background:linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.9));
+      border-radius:14px;
+      padding:18px;
+      box-shadow:var(--glass-shadow);
+    }
+
+    .controls{
+      display:flex;
+      gap:12px;
+      align-items:center;
+      margin-bottom:12px;
+      flex-wrap:wrap;
+    }
+
+    .chips{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .chip{
+      background:var(--card);
+      padding:8px 12px;
+      border-radius:999px;
+      font-weight:600;
+      font-size:13px;
+      border:1px solid rgba(40,45,40,0.04);
+      cursor:pointer;
+    }
+    .chip.active{
+      background:var(--accent);
+      color:white;
+    }
+
+    /* table */
+    .table-wrap{
+      overflow:auto;
+      border-radius:12px;
+      margin-top:10px;
+    }
+    table.rankings{
+      border-collapse:collapse;
+      width:100%;
+      min-width:880px;
+      font-size:14px;
+    }
+    table thead th{
+      text-align:left;
+      padding:12px 14px;
+      font-weight:700;
+      color:var(--muted-2);
+      position:sticky;
+      top:0;
+      background:linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.95));
+      z-index:2;
+    }
+    table tbody td{
+      padding:14px;
+      border-bottom:1px dashed rgba(60,70,60,0.04);
+      vertical-align:middle;
+      color:var(--muted-text);
+    }
+    .badge{
+      display:inline-block;
+      padding:6px 8px;
+      background:rgba(155,185,135,0.12);
+      border-radius:8px;
+      font-weight:700;
+      color:var(--muted-2);
+      font-size:13px;
+    }
+    .rank-num{
+      font-family:"Playfair Display", serif;
+      font-size:20px;
+      color:var(--muted-2)
+    }
+
+    /* ROI calculator */
+    .roi{
+      display:grid;
+      grid-template-columns: 1fr 360px;
+      gap:18px;
+      align-items:start;
+    }
+    .roi-card{
+      border-radius:12px;
+      padding:16px;
+      background:linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.9));
+      box-shadow:var(--shadow);
+    }
+    .form-row{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      margin-bottom:12px;
+    }
+    .form-row label{font-size:13px; min-width:120px; color:var(--muted-text)}
+    .form-row input, .form-row select{
+      flex:1;
+      padding:8px 10px;
+      border-radius:8px;
+      border:1px solid rgba(40,45,40,0.04);
+      font-size:14px;
+    }
+    .result{
+      text-align:center;
+      padding:18px;
+      border-radius:10px;
+      background:linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.75));
+    }
+    .result .big{font-size:26px; font-weight:700; color:var(--muted-2)}
+    .small-muted{font-size:13px; color:var(--muted-text)}
+
+    /* Right column (sidebar) */
+    aside.col-side{
+      width:360px;
+      display:flex;
+      flex-direction:column;
+      gap:18px;
+    }
+    .mini-card{
+      background:linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.85));
+      border-radius:12px;
+      padding:16px;
+      box-shadow:var(--glass-shadow);
+    }
+
+    /* footer */
+    footer{
+      margin-top:28px;
+      padding:22px;
+      text-align:center;
+      color:var(--muted-text);
+      font-size:13px;
+    }
+
+    /* responsive */
+    @media (max-width:1100px){
+      .hero{grid-template-columns:1fr}
+      .hero-side{order: -1}
+      .roi{grid-template-columns: 1fr}
+      aside.col-side{width:100%}
+      main{flex-direction:column}
+      .features{grid-template-columns:repeat(2,1fr)}
+    }
+    @media (max-width:680px){
+      .features{grid-template-columns:1fr}
+      .brand-title .word{font-size:18px}
+      .logo-mark{width:56px;height:56px}
+    }
+
+    /* subtle utilities */
+    .muted{color:var(--muted-text)}
+    .center{text-align:center}
+    .hidden{display:none}
+    pre{white-space:pre-wrap; word-break:break-word}
+  </style>
 </head>
 <body>
+  <div class="wrap" role="document">
 
-<header>
-    <h1>University Rankings</h1>
-    <p>My first university ranking website 🎓</p>
-</header>
+    <!-- HEADER -->
+    <header class="brand" role="banner">
+      <a class="logo" href="#" aria-label="Ediguide home">
+        <div class="logo-mark" aria-hidden="true">
+          <!-- simple open-book mark -->
+          <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true">
+            <path d="M8 12c0 0 10-6 24-6s24 6 24 6v40s-10-6-24-6S8 52 8 52V12z" fill="white" opacity="0.95"/>
+            <path d="M32 6v52" stroke="rgba(0,0,0,0.06)" stroke-width="1.2"/>
+          </svg>
+        </div>
+        <div class="brand-title">
+          <span class="word">Ediguide</span>
+          <span class="tag">UK degree rankings • ROI • Career signals</span>
+        </div>
+      </a>
 
-<main>
-    <table id="ranking-table">
-        <thead>
-            <tr>
-                <th>Rank</th>
-                <th>University</th>
-                <th>Country</th>
-                <th>Score</th>
-            </tr>
-        </thead>
-        <tbody>
-            <!-- Rankings will be loaded here -->
-        </tbody>
-    </table>
-</main>
+      <div class="nav-actions" role="navigation" aria-label="Top actions">
+        <button class="btn secondary" id="loginBtn">Log in</button>
+        <button class="btn" id="ctaTry">Try a demo</button>
+      </div>
+    </header>
 
-<footer>
-    <p>© 2026 | Built by Me</p>
-</footer>
+    <!-- HERO -->
+    <section class="hero" aria-label="Intro">
+      <div class="hero-card">
+        <h1>Highly accurate rankings & ROI for UK degrees</h1>
+        <p class="lead">Ediguide provides composite rankings, ROI projections, and transparent scoring for <strong>UK</strong> undergraduate degrees — built for students, advisers, and universities.</p>
 
-<script src="js/main.js"></script>
+        <!-- search/filters -->
+        <div class="searchbar" role="search" aria-label="Search degrees">
+          <div class="field" style="flex:1">
+            <svg width="18" height="18" viewBox="0 0 24 24" style="opacity:.6" aria-hidden="true"><path fill="currentColor" d="M9.5 3A6.5 6.5 0 109.5 16A6.5 6.5 0 009.5 3M20 20l-4.35-4.35"></path></svg>
+            <input id="globalSearch" placeholder="Search degree or university (UK only)" aria-label="Search degrees" />
+          </div>
+          <div class="field" title="Select subject">
+            <select id="subjectSelect" aria-label="Filter by subject">
+              <option value="">All subjects</option>
+              <option>Computer Science</option>
+              <option>Engineering</option>
+              <option>Business & Management</option>
+              <option>Medicine & Health</option>
+              <option>Humanities</option>
+              <option>Social Sciences</option>
+            </select>
+          </div>
+          <div class="pill" aria-hidden="true">UK only</div>
+        </div>
+
+        <!-- micro-brand info -->
+        <div style="display:flex;gap:12px;margin-top:12px;align-items:center;">
+          <div style="flex:1;color:var(--muted-text)">
+            <strong>Composite index:</strong> Salary × Employment × Satisfaction + research signal — transparent weights you can adjust in the controls below.
+          </div>
+          <button class="btn secondary" id="openWeights">Adjust weights</button>
+        </div>
+      </div>
+
+      <aside class="hero-side" aria-hidden="true">
+        <div class="image-stack">
+          <!-- Unsplash images related to higher education -->
+          <img src="https://images.unsplash.com/photo-1523050854058-8df90110c9f1?q=80&w=1200&auto=format&fit=crop&ixlib=rb-4.0.3&s=3c3a2c3b4b1f5d1c" alt="University campus with students walking">
+          <img src="https://images.unsplash.com/photo-1503676260728-1c00da094a0b?q=80&w=1200&auto=format&fit=crop&ixlib=rb-4.0.3&s=5ed1a99c67d6f6e3" alt="Students studying outdoors">
+          <img src="https://images.unsplash.com/photo-1564869739896-1f47d4b0f8f2?q=80&w=1200&auto=format&fit=crop&ixlib=rb-4.0.3&s=4b1f6d2afd1b8d88" alt="Graduation cap toss" style="grid-column:1 / -1">
+        </div>
+
+        <div class="stat-row">
+          <div class="stat">
+            <div class="num">3,200+</div>
+            <div class="lbl">Degrees analysed</div>
+          </div>
+          <div class="stat">
+            <div class="num">UK only</div>
+            <div class="lbl">Coverage</div>
+          </div>
+          <div class="stat">
+            <div class="num">Transparent</div>
+            <div class="lbl">Adjust weights</div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- MAIN -->
+    <main>
+      <section class="col-main" aria-label="Main content">
+
+        <!-- Features -->
+        <div class="features" role="list">
+          <div class="feature" role="listitem">
+            <h3>Composite Rankings</h3>
+            <p>Combine real salary outcomes, employment rates, satisfaction, and research strength into a single transparent index.</p>
+          </div>
+          <div class="feature" role="listitem">
+            <h3>ROI Calculator</h3>
+            <p>Enter tuition, living costs and expected earnings to model net present value and payback horizons.</p>
+          </div>
+          <div class="feature" role="listitem">
+            <h3>Student-centric</h3>
+            <p>Designed for prospective students — clean, clear, and easy to compare across UK degrees.</p>
+          </div>
+        </div>
+
+        <!-- Rankings panel -->
+        <div class="module panel" aria-labelledby="rankingsHeading">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <h2 id="rankingsHeading" style="margin:0;font-family:'Playfair Display',serif;color:var(--muted-2)">Top UK Degrees (composite ranking)</h2>
+              <div class="small-muted">Adjust the weights to see how rankings change in realtime.</div>
+            </div>
+
+            <div class="controls" role="toolbar" aria-label="Ranking controls">
+              <div class="chips" id="subjectChips">
+                <button class="chip active" data-sub="">All</button>
+                <button class="chip" data-sub="Computer Science">Computer Science</button>
+                <button class="chip" data-sub="Engineering">Engineering</button>
+                <button class="chip" data-sub="Business & Management">Business</button>
+                <button class="chip" data-sub="Medicine & Health">Medicine</button>
+              </div>
+
+              <div style="display:flex;align-items:center;gap:8px">
+                <label for="sortSelect" class="small-muted" style="margin-right:4px">Sort</label>
+                <select id="sortSelect" aria-label="Sort rankings" style="padding:8px;border-radius:12px;border:1px solid rgba(40,45,40,0.04)">
+                  <option value="composite">Composite score</option>
+                  <option value="roi">ROI</option>
+                  <option value="salary">Avg starting salary</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Table -->
+          <div class="table-wrap" role="region" aria-label="Rankings table">
+            <table class="rankings" aria-describedby="rankingsHeading">
+              <thead>
+                <tr>
+                  <th style="width:90px">Rank</th>
+                  <th>Degree / Institution</th>
+                  <th>Subject</th>
+                  <th>Avg start salary</th>
+                  <th>Employment %</th>
+                  <th>Student satisf.</th>
+                  <th>Composite</th>
+                  <th>Est. ROI</th>
+                </tr>
+              </thead>
+              <tbody id="rankingsTbody">
+                <!-- populated by JS -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- explanation -->
+          <div style="margin-top:12px;color:var(--muted-text);font-size:13px">
+            <strong>Composite methodology:</strong> Composite = (salary_z × w_salary) + (employment_z × w_employment) + (satisfaction_z × w_satisfaction) + (research_z × w_research).
+            We standardize each metric (z-score) and scale to 0–100 for display. ROI is modelled separately using an NPV assumption.
+          </div>
+        </div>
+
+        <!-- ROI Calculator -->
+        <div class="module panel" aria-labelledby="roiHeading" style="margin-top:18px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <h3 id="roiHeading" style="margin:0;font-family:'Playfair Display',serif;color:var(--muted-2)">ROI Calculator</h3>
+            <div class="small-muted">Model career earnings & payback — UK-only assumptions</div>
+          </div>
+
+          <div class="roi" style="margin-top:12px">
+            <div class="roi-card" aria-hidden="false">
+              <div style="font-weight:700;margin-bottom:10px">Estimate ROI</div>
+
+              <div class="form-row">
+                <label for="selDegree">Choose a degree</label>
+                <select id="selDegree" aria-label="Select degree to estimate ROI"></select>
+              </div>
+
+              <div class="form-row">
+                <label for="yearsStudy">Years of study</label>
+                <input id="yearsStudy" type="number" min="1" max="10" value="3" aria-label="Years of study">
+              </div>
+
+              <div class="form-row">
+                <label for="annualTuition">Annual tuition (£)</label>
+                <input id="annualTuition" type="number" min="0" value="9250" aria-label="Annual tuition">
+              </div>
+
+              <div class="form-row">
+                <label for="living">Living costs/year (£)</label>
+                <input id="living" type="number" min="0" value="11000" aria-label="Living costs per year">
+              </div>
+
+              <div class="form-row">
+                <label for="discount">Discount rate (%)</label>
+                <input id="discount" type="number" min="0" max="15" value="3.5" step="0.1" aria-label="Discount rate">
+              </div>
+
+              <div style="display:flex;gap:10px;margin-top:6px">
+                <button class="btn" id="calcROI">Calculate</button>
+                <button class="btn secondary" id="resetROI">Reset</button>
+              </div>
+            </div>
+
+            <aside class="roi-card" aria-live="polite" aria-atomic="true">
+              <div class="result" id="roiResult">
+                <div class="small-muted">Estimated Net Present Value (NPV)</div>
+                <div class="big" id="roiNpv">—</div>
+                <div class="small-muted" id="paybackSpan">Payback: — years</div>
+              </div>
+              <div style="margin-top:12px;color:var(--muted-text);font-size:13px">
+                <strong>Assumptions</strong>
+                <ul style="margin:8px 0 0 18px;color:var(--muted-text);font-size:13px">
+                  <li>Salary path starts at degree's average start salary.</li>
+                  <li>Salary growth default 3% p.a. (modelled)</li>
+                  <li>All figures are illustrative — connect to live data for production.</li>
+                </ul>
+              </div>
+            </aside>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- RIGHT SIDEBAR -->
+      <aside class="col-side" aria-label="Sidebar">
+
+        <div class="mini-card">
+          <strong>Method transparency</strong>
+          <div style="margin-top:8px;color:var(--muted-text);font-size:13px">
+            We publish weights and provide a downloadable CSV of our source signals. Use "Adjust weights" to experiment with ranking sensitivity.
+          </div>
+        </div>
+
+        <div class="mini-card">
+          <strong>Quick filter</strong>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="chip" data-filter="top100">Top 100</button>
+            <button class="chip" data-filter="lowdebt">Low debt</button>
+            <button class="chip" data-filter="fastpay">Fast payback</button>
+          </div>
+        </div>
+
+        <div class="mini-card">
+          <strong>Export</strong>
+          <div style="margin-top:8px;color:var(--muted-text);font-size:13px">
+            Download current view:
+            <div style="margin-top:8px;display:flex;gap:8px">
+              <button class="btn" id="downloadCsv">CSV</button>
+              <button class="btn secondary" id="downloadPdf">PDF</button>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+    </main>
+
+    <footer>
+      © <span id="year"></span> Ediguide — UK degree rankings & ROI. Built with care.
+    </footer>
+  </div>
+
+  <!-- SCRIPT: data + functionality -->
+  <script>
+    /* ------------------------------------
+       Ediguide — client demo script
+       - Sample dataset (UK only) included
+       - Composite ranking calculation with adjustable weights
+       - ROI calculator (NPV & payback)
+       - Export CSV
+       ------------------------------------ */
+
+    (() => {
+      // small helper utils
+      const fmt = n => {
+        if (n === null || n === undefined || isNaN(n)) return "—";
+        return '£' + Number(n).toLocaleString(undefined, {maximumFractionDigits:0});
+      };
+      const pct = n => (isNaN(n) ? "—" : (Number(n).toFixed(1) + "%"));
+
+      // sample dataset: UK-only degrees (illustrative)
+      // fields: id, degree, institution, subject, start_salary (GBP), employment_pct, satisfaction (0-100), research_score (0-100), tuition (annual default)
+      const sampleDegrees = [
+        {id:1, degree:"Computer Science BSc", institution:"Northern College", subject:"Computer Science", start_salary:33000, employment_pct:95, satisfaction:86, research:74, tuition:9250},
+        {id:2, degree:"Mechanical Engineering BEng", institution:"Westminster University", subject:"Engineering", start_salary:32000, employment_pct:94, satisfaction:82, research:69, tuition:9250},
+        {id:3, degree:"Business Management BSc", institution:"City & Central", subject:"Business & Management", start_salary:28500, employment_pct:92, satisfaction:79, research:56, tuition:9250},
+        {id:4, degree:"Medicine MBChB", institution:"Royal Medical School", subject:"Medicine & Health", start_salary:41000, employment_pct:98, satisfaction:90, research:88, tuition:9250},
+        {id:5, degree:"Economics BSc", institution:"Greenwich University", subject:"Social Sciences", start_salary:30000, employment_pct:93, satisfaction:81, research:70, tuition:9250},
+        {id:6, degree:"History BA", institution:"St Edmund's College", subject:"Humanities", start_salary:24000, employment_pct:88, satisfaction:84, research:58, tuition:9250},
+        {id:7, degree:"Law LLB", institution:"King's Vale", subject:"Social Sciences", start_salary:35000, employment_pct:96, satisfaction:77, research:66, tuition:9250},
+        {id:8, degree:"Electrical Engineering MEng", institution:"Southbridge Polytechnic", subject:"Engineering", start_salary:34000, employment_pct:95, satisfaction:80, research:72, tuition:9250},
+        {id:9, degree:"Nursing BSc", institution:"Queens Medical Institute", subject:"Medicine & Health", start_salary:26000, employment_pct:97, satisfaction:88, research:49, tuition:9250},
+        {id:10, degree:"Data Science BSc", institution:"Imperialshire College", subject:"Computer Science", start_salary:36000, employment_pct:94, satisfaction:85, research:77, tuition:9250},
+      ];
+
+      // expose year in footer
+      document.getElementById('year').textContent = new Date().getFullYear();
+
+      /* ---------- state ---------- */
+      const state = {
+        weights: {
+          salary: 0.4,
+          employment: 0.25,
+          satisfaction: 0.2,
+          research: 0.15
+        },
+        degrees: sampleDegrees.slice(),
+        filtered: [],
+        selectedSubject: '',
+        sortBy: 'composite',
+      };
+
+      // populate degree dropdown for ROI
+      const selDegree = document.getElementById('selDegree');
+      function populateDegreeSelect(){
+        selDegree.innerHTML = '';
+        state.degrees.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.id;
+          opt.textContent = `${d.degree} — ${d.institution}`;
+          selDegree.appendChild(opt);
+        });
+      }
+      populateDegreeSelect();
+
+      /* ---------- Composite ranking helpers ---------- */
+      // standardize array of numbers into z-scores and normalize to 0-100
+      function toNormalizedScores(values){
+        const arr = values.filter(v => isFinite(v)).map(Number);
+        const mean = arr.reduce((a,b)=>a+b,0) / arr.length;
+        const sd = Math.sqrt(arr.reduce((a,b)=>a+Math.pow(b-mean,2),0)/arr.length) || 1;
+        // z-scores -> rescale to 0..100 roughly
+        return values.map(v => {
+          if (!isFinite(v)) return 50;
+          const z = (v - mean) / sd;
+          // map z in [-2.5..2.5] to [0..100] clamped
+          const scaled = Math.max(0, Math.min(100, (z + 2.5) * (100 / 5)));
+          return scaled;
+        });
+      }
+
+      // compute composite for each degree (returns updated array)
+      function computeComposite(degArray, weights){
+        // prepare arrays
+        const salaryArr = degArray.map(d => d.start_salary);
+        const employmentArr = degArray.map(d => d.employment_pct);
+        const satisfactionArr = degArray.map(d => d.satisfaction);
+        const researchArr = degArray.map(d => d.research);
+
+        const sSalary = toNormalizedScores(salaryArr);
+        const sEmployment = toNormalizedScores(employmentArr);
+        const sSatisfaction = toNormalizedScores(satisfactionArr);
+        const sResearch = toNormalizedScores(researchArr);
+
+        return degArray.map((d,i) => {
+          const compositeRaw = (
+            sSalary[i] * weights.salary +
+            sEmployment[i] * weights.employment +
+            sSatisfaction[i] * weights.satisfaction +
+            sResearch[i] * weights.research
+          );
+          // scale to 0..100 by dividing by total weight (which should be 1)
+          const composite = compositeRaw / (weights.salary + weights.employment + weights.satisfaction + weights.research);
+          return Object.assign({}, d, {
+            composite: +(composite.toFixed(2)),
+            salary_norm: +(sSalary[i].toFixed(2)),
+            employment_norm: +(sEmployment[i].toFixed(2)),
+            satisfaction_norm: +(sSatisfaction[i].toFixed(2)),
+            research_norm: +(sResearch[i].toFixed(2)),
+            est_roi: calcSimpleROI(d) // quick pre-calc
+          });
+        });
+      }
+
+      // simple ROI placeholder (net present value of 20-year earnings minus costs)
+      function calcSimpleROI(degree){
+        // internal params
+        const years = 3;
+        const tuition = degree.tuition || 9250;
+        const living = 11000;
+        const startSalary = degree.start_salary || 25000;
+        const salaryGrowth = 0.03;
+        const discount = 0.035;
+        // costs during study
+        const totalCost = years * (tuition + living);
+        // project earnings for 20 years after graduation
+        const careerYears = 20;
+        let pvEarnings = 0;
+        for(let t=1;t<=careerYears;t++){
+          const salaryAtT = startSalary * Math.pow(1+salaryGrowth, t-1);
+          pvEarnings += salaryAtT / Math.pow(1+discount, t);
+        }
+        // NPV = PV(earnings) - costs (discount costs to t=0 since costs are upfront)
+        return +(pvEarnings - totalCost).toFixed(0);
+      }
+
+      /* ---------- render table ---------- */
+      const tbody = document.getElementById('rankingsTbody');
+
+      function renderTable(){
+        // filter by subject and search
+        const q = document.getElementById('globalSearch').value.trim().toLowerCase();
+        const subj = state.selectedSubject;
+        let data = computeComposite(state.degrees, state.weights);
+
+        // filter uk-only (all sample are UK)
+        if (subj){
+          data = data.filter(d => d.subject === subj);
+        }
+        if (q){
+          data = data.filter(d => (d.degree + ' ' + d.institution).toLowerCase().includes(q));
+        }
+
+        // sort
+        const sortBy = state.sortBy;
+        if (sortBy === 'composite') data.sort((a,b) => b.composite - a.composite);
+        else if (sortBy === 'roi') data.sort((a,b) => b.est_roi - a.est_roi);
+        else if (sortBy === 'salary') data.sort((a,b) => b.start_salary - a.start_salary);
+
+        // save filtered state
+        state.filtered = data;
+
+        tbody.innerHTML = '';
+        data.forEach((d, idx) => {
+          const tr = document.createElement('tr');
+
+          tr.innerHTML = `
+            <td><div class="rank-num">${idx+1}</div></td>
+            <td>
+              <div style="font-weight:700;color:var(--muted-2)">${escapeHtml(d.degree)}</div>
+              <div class="muted" style="font-size:13px">${escapeHtml(d.institution)}</div>
+            </td>
+            <td>${escapeHtml(d.subject)}</td>
+            <td>${fmt(d.start_salary)}</td>
+            <td>${(d.employment_pct)}%</td>
+            <td>${d.satisfaction}</td>
+            <td><span class="badge">${d.composite.toFixed(1)}</span></td>
+            <td>${fmt(d.est_roi)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      // simple HTML escape
+      function escapeHtml(s){ return (s+'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+      /* ---------- event wiring ---------- */
+      // subject chips
+      document.getElementById('subjectChips').addEventListener('click', e => {
+        const btn = e.target.closest('.chip');
+        if(!btn) return;
+        document.querySelectorAll('#subjectChips .chip').forEach(c=>c.classList.remove('active'));
+        btn.classList.add('active');
+        state.selectedSubject = btn.dataset.sub || '';
+        renderTable();
+      });
+
+      // global search
+      document.getElementById('globalSearch').addEventListener('input', () => renderTable());
+
+      // sort select
+      document.getElementById('sortSelect').addEventListener('change', e => {
+        state.sortBy = e.target.value;
+        renderTable();
+      });
+
+      // weight-adjust modal: lightweight prompt UI
+      document.getElementById('openWeights').addEventListener('click', ()=>{
+        const w = state.weights;
+        const salary = Number(prompt('Weight for salary (0-1)', w.salary)) || w.salary;
+        const employment = Number(prompt('Weight for employment (0-1)', w.employment)) || w.employment;
+        const satisfaction = Number(prompt('Weight for satisfaction (0-1)', w.satisfaction)) || w.satisfaction;
+        const research = Number(prompt('Weight for research (0-1)', w.research)) || w.research;
+        // normalize
+        const total = salary + employment + satisfaction + research || 1;
+        state.weights = {
+          salary: salary/total,
+          employment: employment/total,
+          satisfaction: satisfaction/total,
+          research: research/total
+        };
+        renderTable();
+      });
+
+      // ROI calculator
+      document.getElementById('calcROI').addEventListener('click', () => {
+        const degreeId = Number(selDegree.value);
+        const degree = state.degrees.find(d => d.id === degreeId) || state.degrees[0];
+        const years = Number(document.getElementById('yearsStudy').value) || 3;
+        const annualTuition = Number(document.getElementById('annualTuition').value) || degree.tuition || 9250;
+        const living = Number(document.getElementById('living').value) || 11000;
+        const discount = Number(document.getElementById('discount').value)/100 || 0.035;
+
+        // compute detailed NPV and payback
+        // total cost during study
+        const totalCost = years * (annualTuition + living);
+
+        // career projection 40 years (shorter for the demo)
+        const careerYears = 40;
+        const salaryGrowth = 0.03;
+        let pvEarnings = 0;
+        let cumulative = 0;
+        let paybackYear = null;
+        let startSalary = degree.start_salary || 25000;
+
+        for(let t=1;t<=careerYears;t++){
+          const salaryAtT = startSalary * Math.pow(1+salaryGrowth, t-1);
+          const pv = salaryAtT / Math.pow(1+discount, t+years); // discount from time 0 including study
+          pvEarnings += pv;
+
+          cumulative += salaryAtT;
+          if(paybackYear === null && cumulative >= totalCost){
+            paybackYear = t;
+          }
+        }
+
+        const npv = pvEarnings - totalCost;
+
+        document.getElementById('roiNpv').textContent = (npv >= 0 ? '£' + Math.round(npv).toLocaleString() : '£' + Math.round(npv).toLocaleString());
+        document.getElementById('paybackSpan').textContent = `Approx. payback: ${paybackYear ? (paybackYear + ' years after graduation') : '> ' + careerYears + ' years'}`;
+      });
+
+      // reset ROI
+      document.getElementById('resetROI').addEventListener('click', () => {
+        document.getElementById('yearsStudy').value = 3;
+        document.getElementById('annualTuition').value = 9250;
+        document.getElementById('living').value = 11000;
+        document.getElementById('discount').value = 3.5;
+        document.getElementById('roiNpv').textContent = '—';
+        document.getElementById('paybackSpan').textContent = 'Payback: — years';
+      });
+
+      // quick export CSV of current view
+      document.getElementById('downloadCsv').addEventListener('click', ()=>{
+        if(!state.filtered.length) renderTable();
+        const rows = [
+          ['rank','degree','institution','subject','salary','employment_pct','satisfaction','composite','est_roi']
+        ];
+        state.filtered.forEach((d,i) => {
+          rows.push([i+1, d.degree, d.institution, d.subject, d.start_salary, d.employment_pct, d.satisfaction, d.composite, d.est_roi]);
+        });
+        const csv = rows.map(r => r.map(c => `"${(''+c).replace(/"/g,'""')}"`).join(',')).join('\\n');
+        const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'ediguide_rankings.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      });
+
+      // fake PDF download button (placeholder)
+      document.getElementById('downloadPdf').addEventListener('click', ()=>{
+        alert('PDF export is available in the pro workflow — this demo triggers a CSV export. For production we integrate server-side rendering or client-side print styles.');
+      });
+
+      // initial render
+      renderTable();
+
+      // wire quick chips in sidebar
+      document.querySelectorAll('.col-side .chip').forEach(ch=>{
+        ch.addEventListener('click', ()=>{
+          const f = ch.dataset.filter;
+          if(f === 'top100'){
+            document.getElementById('sortSelect').value = 'composite';
+            state.selectedSubject = '';
+            document.querySelectorAll('#subjectChips .chip').forEach(c=>c.classList.remove('active'));
+            document.querySelector('#subjectChips .chip[data-sub=""]').classList.add('active');
+            renderTable();
+            alert('Top 100 filter applied (demo uses a short sample dataset).');
+          } else if(f === 'lowdebt'){
+            alert('Low debt filter: demo hint — try filtering by shorter study years or lower tuition.');
+          } else if(f === 'fastpay'){
+            alert('Fast payback: sort by ROI to surface faster paybacks.');
+            document.getElementById('sortSelect').value = 'roi';
+            state.sortBy = 'roi';
+            renderTable();
+          }
+        });
+      });
+
+      // small: allow clicking any table row to prefill ROI degree
+      tbody.addEventListener('click', e => {
+        const tr = e.target.closest('tr');
+        if(!tr) return;
+        const idx = Array.from(tbody.children).indexOf(tr);
+        const d = state.filtered[idx];
+        if(!d) return;
+        selDegree.value = d.id;
+        // scroll to ROI section
+        document.getElementById('roiHeading').scrollIntoView({behavior:'smooth', block:'center'});
+      });
+
+      // utility: pre-calc est_roi for dataset when loading
+      state.degrees = state.degrees.map(d => Object.assign({}, d, {est_roi: calcSimpleROI(d)}));
+      populateDegreeSelect();
+      renderTable();
+
+      /* accessibility nicety: allow keyboard for chips */
+      document.querySelectorAll('.chip').forEach(c => {
+        c.tabIndex = 0;
+        c.addEventListener('keydown', e => {
+          if(e.key === 'Enter' || e.key === ' ') c.click();
+        });
+      });
+
+      // expose small debugging hook (global)
+      window.Ediguide = {state, computeComposite, calcSimpleROI};
+
+    })();
+  </script>
 </body>
 </html>
-body {
-    font-family: Arial, sans-serif;
-    margin: 0;
-    background-color: #f4f6f8;
-    color: #333;
-}
-
-header {
-    background-color: #1e3a8a;
-    color: white;
-    padding: 20px;
-    text-align: center;
-}
-
-main {
-    padding: 20px;
-}
-
-table {
-    width: 100%;
-    border-collapse: collapse;
-    background: white;
-}
-
-th, td {
-    padding: 12px;
-    text-align: left;
-    border-bottom: 1px solid #ddd;
-}
-
-th {
-    background-color: #e5e7eb;
-}
-
-tr:hover {
-    background-color: #f1f5f9;
-}
-
-footer {
-    text-align: center;
-    padding: 10px;
-    font-size: 0.9em;
-    color: #666;
-}
-[
-    {
-        "rank": 1,
-        "university": "Harvard University",
-        "country": "USA",
-        "score": 98.5
-    },
-    {
-        "rank": 2,
-        "university": "University of Oxford",
-        "country": "UK",
-        "score": 97.8
-    },
-    {
-        "rank": 3,
-        "university": "Stanford University",
-        "country": "USA",
-        "score": 97.2
-    }
-]
-# University Ranking Website 🎓
-
-This is a simple university ranking website built using HTML, CSS, and JavaScript.
-
-## Features
-- Displays a university ranking table
-- Data loaded from a JSON file
-- Clean and simple layout
-
-## Future Plans
-- Add search and filters
-- Add multiple ranking categories
-- Connect to a backend or database
-
-## How to Run
-Just open `index.html` in your browser.
-/* main.js
-   Handles:
-   - fetching ranking data
-   - rendering table
-   - search, filters, sorting
-   - storing local notes (localStorage)
-   - placeholder rating UI (stored local)
-*/
-
-/* ---------- Utility helpers ---------- */
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-
-/* ---------- App state ---------- */
-const state = {
-  data: [],
-  filtered: [],
-  sort: 'rank-asc'
-};
-
-/* ---------- Elements ---------- */
-const tableBody = $('#ranking-table tbody');
-const searchInput = $('#search-input');
-const countryFilter = $('#country-filter');
-const rankMin = $('#rank-min');
-const rankMax = $('#rank-max');
-const sortSelect = $('#sort-select');
-const resetBtn = $('#reset-btn');
-const resultCount = $('#result-count');
-const activeFilters = $('#active-filters');
-
-const NOTES_KEY = 'ediguide_notes_v1';
-const RATINGS_KEY = 'ediguide_ratings_v1';
-
-/* ---------- Load data ---------- */
-/* This site uses a local JSON file. Add more data as needed. */
-async function loadData() {
-  try {
-    const res = await fetch('data/rankings.json');
-    const data = await res.json();
-    state.data = data;
-    state.filtered = data.slice();
-    initFilters();
-    applySortAndRender();
-  } catch (err) {
-    console.error('Failed to load rankings:', err);
-    resultCount.textContent = 'Failed to load data';
-  }
-}
-
-/* ---------- Filters init ---------- */
-function initFilters() {
-  const countries = Array.from(new Set(state.data.map(d => d.country))).sort();
-  countries.forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c;
-    opt.textContent = c;
-    countryFilter.appendChild(opt);
-  });
-}
-
-/* ---------- Rendering ---------- */
-function renderTable(list) {
-  tableBody.innerHTML = '';
-  if (!list.length) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="6">No results</td>`;
-    tableBody.appendChild(tr);
-    resultCount.textContent = '0 results';
-    return;
-  }
-
-  resultCount.textContent = `${list.length} result${list.length>1?'s':''}`;
-
-  list.forEach(item => {
-    const tr = document.createElement('tr');
-
-    // Create rating display: localStorage-backed
-    const ratings = JSON.parse(localStorage.getItem(RATINGS_KEY) || '{}');
-    const avgRating = ratings[item.university]?.avg ?? null;
-
-    tr.innerHTML = `
-      <td>${item.rank}</td>
-      <td class="univ-cell">${escapeHtml(item.university)}</td>
-      <td>${escapeHtml(item.country)}</td>
-      <td>${item.score}</td>
-      <td class="ad-cell"><div class="ad-placeholder small">Ad slot</div></td>
-      <td class="rating-cell" data-univ="${escapeHtml(item.university)}">
-        ${renderStars(avgRating)}
-      </td>
-    `;
-
-    tableBody.appendChild(tr);
-  });
-
-  // wire up rating click handlers (stars)
-  $$('.rating-cell .star').forEach(star => {
-    star.addEventListener('click', (e) => {
-      const cell = e.target.closest('.rating-cell');
-      const univ = cell.dataset.univ;
-      const value = Number(e.target.dataset.value);
-      saveRating(univ, value);
-      applySortAndRender(); // re-render to update average
-    });
-  });
-
-  updateActiveFiltersDisplay();
-}
-
-/* ---------- Escape helper ---------- */
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, s => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  }[s]));
-}
-
-/* ---------- Stars UI ---------- */
-function renderStars(avg) {
-  // if no rating, show 0 highlighted
-  let html = '';
-  for (let i=1;i<=5;i++) {
-    const cls = (avg && avg >= i - 0.5) ? 'star active' : 'star';
-    html += `<span class="${cls}" data-value="${i}" role="button" aria-label="Rate ${i}">${'★'}</span>`;
-  }
-  if (avg) html += `<div class="rating-note">(${avg.toFixed(1)})</div>`;
-  return html;
-}
-
-/* ---------- Rating storage (local) ---------- */
-function saveRating(university, value) {
-  const all = JSON.parse(localStorage.getItem(RATINGS_KEY) || '{}');
-  if (!all[university]) all[university] = { sum: 0, count: 0, avg: 0 };
-  all[university].sum += value;
-  all[university].count += 1;
-  all[university].avg = all[university].sum / all[university].count;
-  localStorage.setItem(RATINGS_KEY, JSON.stringify(all));
-  alert(`Thanks! Recorded ${value}★ for ${university} (stored locally).`);
-}
-
-/* ---------- Filtering & Sorting logic ---------- */
-function applyFilters() {
-  const q = (searchInput.value || '').trim().toLowerCase();
-  const country = countryFilter.value;
-  const min = Number(rankMin.value) || null;
-  const max = Number(rankMax.value) || null;
-
-  state.filtered = state.data.filter(item => {
-    if (q) {
-      const inName = item.university.toLowerCase().includes(q);
-      if (!inName) return false;
-    }
-    if (country && item.country !== country) return false;
-    if (min && item.rank < min) return false;
-    if (max && item.rank > max) return false;
-    return true;
-  });
-}
-
-function applySortAndRender() {
-  applyFilters();
-
-  // Sorting
-  const s = sortSelect.value;
-  state.filtered.sort((a,b) => {
-    switch(s) {
-      case 'rank-asc': return a.rank - b.rank;
-      case 'rank-desc': return b.rank - a.rank;
-      case 'score-desc': return b.score - a.score;
-      case 'score-asc': return a.score - b.score;
-      case 'name-asc': return a.university.localeCompare(b.university);
-      case 'name-desc': return b.university.localeCompare(a.university);
-      case 'country-asc': return a.country.localeCompare(b.country);
-      default: return a.rank - b.rank;
-    }
-  });
-
-  renderTable(state.filtered);
-}
-
-/* ---------- Active filters display ---------- */
-function updateActiveFiltersDisplay() {
-  const parts = [];
-  if (searchInput.value) parts.push(`Query: "${searchInput.value}"`);
-  if (countryFilter.value) parts.push(`Country: ${countryFilter.value}`);
-  if (rankMin.value || rankMax.value) {
-    parts.push(`Rank: ${rankMin.value || '1'}–${rankMax.value || '∞'}`);
-  }
-  activeFilters.innerHTML = parts.length ? parts.map(p => `<li>${p}</li>`).join('') : '<li>None</li>';
-}
-
-/* ---------- Notes (localStorage) ---------- */
-function loadNotes() {
-  const raw = localStorage.getItem(NOTES_KEY);
-  const arr = raw ? JSON.parse(raw) : [];
-  return arr;
-}
-function saveNote(noteObj) {
-  const arr = loadNotes();
-  arr.unshift(noteObj);
-  localStorage.setItem(NOTES_KEY, JSON.stringify(arr));
-  renderNotes();
-}
-function renderNotes() {
-  const notes = loadNotes();
-  const container = $('#notes-list');
-  if (!notes.length) {
-    container.innerHTML = `<p>No notes yet. Yours are stored locally in this browser.</p>`;
-    return;
-  }
-  container.innerHTML = notes.map(n => `
-    <div class="note">
-      <div class="note-meta"><strong>${escapeHtml(n.name)}</strong> ${n.univ?`— ${escapeHtml(n.univ)}`:''} <span class="date">(${new Date(n.ts).toLocaleString()})</span></div>
-      <div class="note-body">${escapeHtml(n.text)}</div>
-    </div>
-  `).join('');
-}
-
-/* ---------- Event bindings ---------- */
-function bindEvents() {
-  [searchInput, countryFilter, rankMin, rankMax].forEach(el => {
-    el.addEventListener('input', () => {
-      applySortAndRender();
-    });
-  });
-
-  sortSelect.addEventListener('change', () => applySortAndRender());
-  resetBtn.addEventListener('click', () => {
-    searchInput.value=''; countryFilter.value=''; rankMin.value=''; rankMax.value=''; sortSelect.value='rank-asc';
-    applySortAndRender();
-  });
-
-  // note form
-  $('#note-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const note = {
-      name: $('#note-name').value || 'anon',
-      univ: $('#note-univ').value || '',
-      text: $('#note-text').value || '',
-      ts: Date.now()
-    };
-    saveNote(note);
-    $('#note-form').reset();
-    alert('Saved locally. Notes are stored only in your browser (no server).');
-  });
-
-  // set year in footer
-  $('#year').textContent = new Date().getFullYear();
-}
-
-/* ---------- Initialise ---------- */
-function init() {
-  bindEvents();
-  renderNotes();
-  loadData();
-}
-
-document.addEventListener('DOMContentLoaded', init);
-[
-  { "rank": 1, "university": "Massachusetts Institute of Technology", "country": "USA", "score": 5.246 },
-  { "rank": 2, "university": "Princeton University", "country": "USA", "score": 8.904 },
-  { "rank": 3, "university": "University of Oxford", "country": "UK", "score": 10.48 },
-  { "rank": 4, "university": "University of Cambridge", "country": "UK", "score": 12.05 },
-  { "rank": 5, "university": "Yale University", "country": "USA", "score": 15.61 },
-  { "rank": 6, "university": "Harvard University", "country": "USA", "score": 15.73 },
-  { "rank": 7, "university": "Tsinghua University", "country": "China", "score": 17.11 },
-  { "rank": 8, "university": "ETH Zurich", "country": "Switzerland", "score": 23.00 },
-  { "rank": 9, "university": "Technical University of Munich (TUM)", "country": "Germany", "score": 24.35 },
-  { "rank": 10, "university": "University of Tokyo", "country": "Japan", "score": 24.38 },
-  { "rank": 11, "university": "National University of Singapore", "country": "Singapore", "score": 26.35 },
-  { "rank": 12, "university": "University of Toronto", "country": "Canada", "score": 26.61 },
-  { "rank": 13, "university": "University of Melbourne", "country": "Australia", "score": 27.50 },
-  { "rank": 14, "university": "University of California, Berkeley", "country": "USA", "score": 27.57 },
-  { "rank": 15, "university": "Columbia University", "country": "USA", "score": 30.37 },
-  { "rank": 16, "university": "Peking University", "country": "China", "score": 30.82 },
-  { "rank": 17, "university": "University of Pennsylvania", "country": "USA", "score": 32.70 },
-  { "rank": 18, "university": "University of Copenhagen", "country": "Denmark", "score": 37.92 },
-  { "rank": 19, "university": "University of Hong Kong", "country": "Hong Kong", "score": 40.8 },
-  { "rank": 20, "university": "Imperial College London", "country": "UK", "score": 40.23 },
-  { "rank": 21, "university": "Kyoto University", "country": "Japan", "score": 43.52 },
-  { "rank": 22, "university": "Ludwig Maximilian University of Munich (LMU)", "country": "Germany", "score": 45.20 },
-  { "rank": 23, "university": "University of British Columbia", "country": "Canada", "score": 46.69 },
-  { "rank": 24, "university": "UCL (University College London)", "country": "UK", "score": 47.02 },
-  { "rank": 25, "university": "EPFL (École Polytechnique Fédérale de Lausanne)", "country": "Switzerland", "score": 47.73 },
-  { "rank": 26, "university": "Nanyang Technological University", "country": "Singapore", "score": 48.32 },
-  { "rank": 27, "university": "California Institute of Technology", "country": "USA", "score": 49.41 },
-  { "rank": 28, "university": "Leiden University", "country": "Netherlands", "score": 49.45 },
-  { "rank": 29, "university": "Utrecht University", "country": "Netherlands", "score": 52.66 },
-  { "rank": 30, "university": "University of New South Wales", "country": "Australia", "score": 53.05 },
-  { "rank": 31, "university": "Cornell University", "country": "USA", "score": 53.13 },
-  { "rank": 32, "university": "University of Queensland", "country": "Australia", "score": 54.88 },
-  { "rank": 33, "university": "London School of Economics (LSE)", "country": "UK", "score": 57.05 },
-  { "rank": 34, "university": "McGill University", "country": "Canada", "score": 59.50 },
-  { "rank": 35, "university": "KU Leuven", "country": "Belgium", "score": 62.12 },
-  { "rank": 36, "university": "Zhejiang University", "country": "China", "score": 61.29 },
-  { "rank": 37, "university": "Seoul National University", "country": "South Korea", "score": 61.89 },
-  { "rank": 38, "university": "University of Sydney", "country": "Australia", "score": 62.85 },
-  { "rank": 39, "university": "Heidelberg University", "country": "Germany", "score": 62.97 },
-  { "rank": 40, "university": "University of Amsterdam", "country": "Netherlands", "score": 63.48 },
-  { "rank": 41, "university": "Chinese University of Hong Kong", "country": "Hong Kong", "score": 69.75 },
-  { "rank": 42, "university": "Monash University", "country": "Australia", "score": 66.83 },
-  { "rank": 43, "university": "Shanghai Jiao Tong University", "country": "China", "score": 67.59 },
-  { "rank": 44, "university": "Fudan University", "country": "China", "score": 74.90 },
-  { "rank": 45, "university": "University of Michigan", "country": "USA", "score": 75.02 },
-  { "rank": 46, "university": "Northwestern University", "country": "USA", "score": 77.81 },
-  { "rank": 47, "university": "University of Helsinki", "country": "Finland", "score": 81.77 },
-  { "rank": 48, "university": "University of São Paulo", "country": "Brazil", "score": 85.37 },
-  { "rank": 49, "university": "Duke University", "country": "USA", "score": 82.94 },
-  { "rank": 50, "university": "University of Warwick", "country": "UK", "score": 83.14 },
-  { "rank": 51, "university": "University of California, San Diego", "country": "USA", "score": 84.41 },
-  { "rank": 52, "university": "Lund University", "country": "Sweden", "score": 83.86 },
-  { "rank": 53, "university": "University of Zurich", "country": "Switzerland", "score": 84.25 },
-  { "rank": 54, "university": "University of Edinburgh", "country": "UK", "score": 85.83 },
-  { "rank": 55, "university": "Erasmus University Rotterdam", "country": "Netherlands", "score": 86.15 },
-  { "rank": 56, "university": "University of Bristol", "country": "UK", "score": 87.57 },
-  { "rank": 57, "university": "University of Chicago", "country": "USA", "score": 87.96 },
-  { "rank": 58, "university": "IIT Delhi", "country": "India", "score": 94.8 },
-  { "rank": 59, "university": "King's College London", "country": "UK", "score": 94.53 },
-  { "rank": 60, "university": "Polytechnic Institute of Paris", "country": "France", "score": 95.1 },
-  { "rank": 61, "university": "Washington University in St. Louis", "country": "USA", "score": 96.07 },
-  { "rank": 62, "university": "Uppsala University", "country": "Sweden", "score": 97.28 },
-  { "rank": 63, "university": "Brown University", "country": "USA", "score": 98.50 },
-  { "rank": 64, "university": "Humboldt University of Berlin", "country": "Germany", "score": 98.65 },
-  { "rank": 65, "university": "Johns Hopkins University", "country": "USA", "score": 100.3 },
-  { "rank": 66, "university": "Durham University", "country": "UK", "score": 102.6 },
-  { "rank": 67, "university": "Yonsei University", "country": "South Korea", "score": 104.6 },
-  { "rank": 68, "university": "University of Auckland", "country": "New Zealand", "score": 106.1 },
-  { "rank": 69, "university": "University of California, Los Angeles", "country": "USA", "score": 106.9 },
-  { "rank": 70, "university": "Moscow State University", "country": "Russia", "score": 106.2 },
-  { "rank": 71, "university": "National Taiwan University", "country": "Taiwan", "score": 106.5 },
-  { "rank": 72, "university": "University of Barcelona", "country": "Spain", "score": 106.7 },
-  { "rank": 73, "university": "Australian National University", "country": "Australia", "score": 109.9 },
-  { "rank": 74, "university": "Technical University of Delft", "country": "Netherlands", "score": 112.6 },
-  { "rank": 75, "university": "Institut National du Service Public", "country": "France", "score": 112.2 },
-  { "rank": 76, "university": "Nanjing University", "country": "China", "score": 112.5 },
-  { "rank": 77, "university": "Georgia Institute of Technology", "country": "USA", "score": 113.1 },
-  { "rank": 78, "university": "Emory University", "country": "USA", "score": 113.2 },
-  { "rank": 79, "university": "Universidad Nacional Autónoma de México (UNAM)", "country": "Mexico", "score": 113.33 },
-  { "rank": 80, "university": "University of St Andrews", "country": "UK", "score": 114.0 },
-  { "rank": 81, "university": "Hong Kong University of Science and Technology", "country": "Hong Kong", "score": 115.8 },
-  { "rank": 82, "university": "University of Bologna", "country": "Italy", "score": 115.6 },
-  { "rank": 83, "university": "Aarhus University", "country": "Denmark", "score": 117.0 },
-  { "rank": 84, "university": "Tokyo Institute of Technology", "country": "Japan", "score": 117.6 },
-  { "rank": 85, "university": "University of Sheffield", "country": "UK", "score": 118.1 },
-  { "rank": 86, "university": "University of Alberta", "country": "Canada", "score": 118.4 },
-  { "rank": 87, "university": "Rice University", "country": "USA", "score": 119.5 },
-  { "rank": 88, "university": "National University of Malaysia", "country": "Malaysia", "score": 120.1 },
-  { "rank": 89, "university": "University of California, Davis", "country": "USA", "score": 122.8 },
-  { "rank": 90, "university": "University of Southern California", "country": "USA", "score": 123.7 },
-  { "rank": 91, "university": "Free University of Berlin", "country": "Germany", "score": 127.7 },
-  { "rank": 92, "university": "Tohoku University", "country": "Japan", "score": 128.1 },
-  { "rank": 93, "university": "University of Birmingham", "country": "UK", "score": 129.8 },
-  { "rank": 94, "university": "Hong Kong Polytechnic University", "country": "Hong Kong", "score": 129.2 },
-  { "rank": 95, "university": "University of Geneva", "country": "Switzerland", "score": 129.3 },
-  { "rank": 96, "university": "University of Southampton", "country": "UK", "score": 131.9 },
-  { "rank": 97, "university": "University of Oslo", "country": "Norway", "score": 133.0 },
-  { "rank": 98, "university": "University of Illinois Urbana-Champaign", "country": "USA", "score": 134.1 },
-  { "rank": 99, "university": "University of Manchester", "country": "UK", "score": 134.2 },
-  { "rank": 100, "university": "Sapienza University of Rome", "country": "Italy", "score": 134.2 }
-]

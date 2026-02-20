@@ -2162,3 +2162,850 @@ class GeoIPService:
         if country and self.redis:
             await self.redis.setex(f"geo:{ip}", 86400, country)  # cache 24h
         return country
+# backend/app/database.py
+# SQLAlchemy synchronous setup for FastAPI (works well with Alembic)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, scoped_session, declarative_base
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/ediguide")
+
+# echo=False in production
+engine = create_engine(DATABASE_URL, echo=True, pool_pre_ping=True, future=True)
+
+# Use scoped_session for thread-safety if you spawn threads/workers
+SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
+
+Base = declarative_base()
+
+def get_db():
+    """
+    Dependency for FastAPI endpoints to yield DB session.
+    Use:
+        db = next(get_db())
+    or as FastAPI dependency injection:
+        db: Session = Depends(get_db)
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+# backend/app/models.py
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Boolean, Text, JSON, func, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+import uuid
+from .database import Base
+
+def gen_uuid():
+    return str(uuid.uuid4())
+
+class Affiliate(Base):
+    __tablename__ = "affiliates"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    name = Column(String(255), nullable=False, unique=True)
+    network = Column(String(100), nullable=True)  # e.g., 'awin', 'impact', 'manual'
+    config = Column(JSON, nullable=True)  # store network-specific API keys/settings
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    links = relationship("AffiliateLink", back_populates="affiliate", cascade="all, delete-orphan")
+
+class AffiliateLink(Base):
+    __tablename__ = "affiliate_links"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    affiliate_id = Column(UUID(as_uuid=False), ForeignKey("affiliates.id", ondelete="CASCADE"), nullable=False)
+    uni = Column(String(255), nullable=True, index=True)  # university code or slug
+    category = Column(String(255), nullable=True, index=True)  # product category
+    title = Column(String(512), nullable=False)
+    destination_url = Column(Text, nullable=False)  # final URL (merchant) without affiliate params
+    affiliate_url = Column(Text, nullable=False)  # the URL with affiliate tags/params
+    meta = Column(JSON, nullable=True)  # extra metadata: price, image, tracking_id etc.
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    affiliate = relationship("Affiliate", back_populates="links")
+    clicks = relationship("AffiliateClick", back_populates="link", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint('affiliate_id', 'affiliate_url', name='uq_affiliate_affiliate_url'),
+    )
+
+class AffiliateClick(Base):
+    __tablename__ = "affiliate_clicks"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    link_id = Column(UUID(as_uuid=False), ForeignKey("affiliate_links.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id = Column(String(128), nullable=True, index=True)
+    user_id = Column(String(128), nullable=True, index=True)
+    ip = Column(String(64), nullable=True)
+    user_agent = Column(String(1024), nullable=True)
+    referrer = Column(String(1024), nullable=True)
+    metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    link = relationship("AffiliateLink", back_populates="clicks")
+# backend/app/schemas.py
+from pydantic import BaseModel, Field, HttpUrl
+from typing import Optional, Any, List
+from datetime import datetime
+
+class AffiliateBase(BaseModel):
+    name: str
+    network: Optional[str] = None
+    config: Optional[dict] = None
+
+class AffiliateCreate(AffiliateBase):
+    pass
+
+class AffiliateRead(AffiliateBase):
+    id: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class AffiliateLinkBase(BaseModel):
+    affiliate_id: str
+    uni: Optional[str] = None
+    category: Optional[str] = None
+    title: str
+    destination_url: HttpUrl
+    affiliate_url: HttpUrl
+    meta: Optional[dict] = None
+    active: Optional[bool] = True
+
+class AffiliateLinkCreate(AffiliateLinkBase):
+    pass
+
+class AffiliateLinkRead(AffiliateLinkBase):
+    id: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class AffiliateClickCreate(BaseModel):
+    link_id: str
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    ip: Optional[str] = None
+    user_agent: Optional[str] = None
+    referrer: Optional[str] = None
+    metadata: Optional[dict] = None
+
+class RecommendationItem(BaseModel):
+    id: str
+    title: str
+    affiliate_url: HttpUrl
+    destination_url: HttpUrl
+    meta: Optional[dict] = None
+    affiliate_name: Optional[str] = None
+# backend/app/crud.py
+from sqlalchemy.orm import Session
+from . import models, schemas
+from typing import List, Optional
+from sqlalchemy import and_, or_, func
+
+# Affiliate CRUD
+def get_affiliate(db: Session, affiliate_id: str) -> Optional[models.Affiliate]:
+    return db.query(models.Affiliate).filter(models.Affiliate.id == affiliate_id).one_or_none()
+
+def create_affiliate(db: Session, affiliate_in: schemas.AffiliateCreate) -> models.Affiliate:
+    obj = models.Affiliate(**affiliate_in.dict())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+def list_affiliates(db: Session, skip: int = 0, limit: int = 100) -> List[models.Affiliate]:
+    return db.query(models.Affiliate).offset(skip).limit(limit).all()
+
+# AffiliateLink CRUD
+def create_affiliate_link(db: Session, link_in: schemas.AffiliateLinkCreate) -> models.AffiliateLink:
+    obj = models.AffiliateLink(**link_in.dict())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+def get_affiliate_link(db: Session, link_id: str) -> Optional[models.AffiliateLink]:
+    return db.query(models.AffiliateLink).filter(models.AffiliateLink.id == link_id).one_or_none()
+
+def list_affiliate_links(db: Session, uni: Optional[str] = None, category: Optional[str] = None, active: Optional[bool] = True, skip: int = 0, limit: int = 50) -> List[models.AffiliateLink]:
+    q = db.query(models.AffiliateLink).join(models.Affiliate)
+    if active is not None:
+        q = q.filter(models.AffiliateLink.active == active)
+    if uni:
+        q = q.filter(models.AffiliateLink.uni == uni)
+    if category:
+        q = q.filter(models.AffiliateLink.category == category)
+    q = q.order_by(models.AffiliateLink.created_at.desc()).offset(skip).limit(limit)
+    return q.all()
+
+# AffiliateClick CRUD
+def record_affiliate_click(db: Session, click_in: schemas.AffiliateClickCreate) -> models.AffiliateClick:
+    obj = models.AffiliateClick(**click_in.dict())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+# backend/app/services/affiliate_service.py
+"""
+Business logic: recommendation heuristics and network integration placeholders.
+
+This file contains:
+- recommend_links: basic ranking by explicit match on uni/category, and fallback
+- build_affiliate_redirect: for networks that require server-side clicks to embed tracking
+- network_integration placeholders for Awin/Impact (stubs) — store API config in affiliate.config
+"""
+from typing import List, Optional, Dict, Any
+from sqlalchemy.orm import Session
+from .. import crud, models, schemas
+from urllib.parse import urlparse, urlencode, urlunparse, parse_qs
+import logging
+
+logger = logging.getLogger(__name__)
+
+def recommend_links(db: Session, uni: Optional[str], category: Optional[str], limit: int = 8) -> List[schemas.RecommendationItem]:
+    """
+    Very simple recommender:
+    1) Exact matches for uni & category
+    2) Uni-only matches
+    3) Category-only matches
+    4) Any active links (random-ish by created_at desc)
+    Returns list of RecommendationItem
+    """
+    candidates = []
+    if uni and category:
+        candidates = db.query(models.AffiliateLink).filter(
+            models.AffiliateLink.active == True,
+            models.AffiliateLink.uni == uni,
+            models.AffiliateLink.category == category
+        ).order_by(models.AffiliateLink.created_at.desc()).limit(limit).all()
+    # fallback tiers if not enough
+    if len(candidates) < limit and uni:
+        more = db.query(models.AffiliateLink).filter(
+            models.AffiliateLink.active == True,
+            models.AffiliateLink.uni == uni
+        ).order_by(models.AffiliateLink.created_at.desc()).limit(limit - len(candidates)).all()
+        candidates.extend(more)
+    if len(candidates) < limit and category:
+        more = db.query(models.AffiliateLink).filter(
+            models.AffiliateLink.active == True,
+            models.AffiliateLink.category == category
+        ).order_by(models.AffiliateLink.created_at.desc()).limit(limit - len(candidates)).all()
+        candidates.extend(more)
+    if len(candidates) < limit:
+        more = db.query(models.AffiliateLink).filter(models.AffiliateLink.active == True).order_by(models.AffiliateLink.created_at.desc()).limit(limit - len(candidates)).all()
+        candidates.extend(more)
+
+    # Map to schema
+    items = []
+    for l in candidates[:limit]:
+        items.append(schemas.RecommendationItem(
+            id=l.id,
+            title=l.title,
+            affiliate_url=l.affiliate_url,
+            destination_url=l.destination_url,
+            meta=l.meta,
+            affiliate_name=(l.affiliate.name if l.affiliate else None)
+        ))
+    return items
+
+def build_affiliate_redirect(link: models.AffiliateLink, extra_params: Optional[dict] = None) -> str:
+    """
+    Some networks require additional server-side parameterization.
+    This function is a safe place to add server side subids, click IDs, or to rewrite URLs.
+    """
+    if not extra_params:
+        return link.affiliate_url
+    # parse existing affiliate_url and append subid parameter(s)
+    parsed = urlparse(link.affiliate_url)
+    q = parse_qs(parsed.query)
+    for k, v in extra_params.items():
+        q[k] = v if isinstance(v, list) else [str(v)]
+    new_query = urlencode(q, doseq=True)
+    out = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+    return out
+
+# Network integration placeholders
+def fetch_network_product_recs(affiliate: models.Affiliate, uni: Optional[str], category: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    Example stub for network call. Real implementation will use affiliate.config
+    to authenticate to Awin/Impact and call their APIs.
+    Return format:
+    [
+        {
+            "title": "Product X",
+            "affiliate_url": "https://example.affiliatenetwork/abcd",
+            "destination_url": "https://merchant/...",
+            "meta": {"price": "29.99", "image": "..."}
+        }, ...
+    ]
+    """
+    # For now, we return empty. Implement as needed. Log a debug message.
+    logger.debug("fetch_network_product_recs called for affiliate %s (network=%s)", affiliate.name if affiliate else "n/a", affiliate.network if affiliate else None)
+    return []
+# backend/app/routers/affiliate.py
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
+from typing import Optional, List
+from ..database import get_db
+from .. import schemas, crud, services, models
+import logging
+import json
+import urllib.parse
+import requests  # used for network integration or webhooks; optional in your environment
+
+router = APIRouter(prefix="/api/affiliate", tags=["affiliate"])
+logger = logging.getLogger(__name__)
+
+@router.get("/recommendations", response_model=List[schemas.RecommendationItem])
+def get_recommendations(uni: Optional[str] = None, cat: Optional[str] = None, limit: int = 8, db: Session = Depends(get_db)):
+    """
+    GET /api/affiliate/recommendations?uni=xxx&cat=yyy&limit=8
+    Returns top affiliate links for a uni & category.
+    """
+    recs = services.recommend_links(db=db, uni=uni, category=cat, limit=limit)
+    return recs
+
+@router.post("/click", status_code=204)
+def post_click(payload: schemas.AffiliateClickCreate, request: Request, db: Session = Depends(get_db)):
+    """
+    POST /api/affiliate/click
+    Records a click and optionally returns a redirect URL (if you choose to do server-side redirects).
+    The frontend should:
+      - POST the click (fire-and-forget)
+      - Optionally redirect the user to the affiliate_url returned from a separate GET, or rely on the affiliate_url present in the component.
+
+    For privacy: we accept optional session_id and user_id. IP and UA are captured from request if not provided.
+    """
+    # populate IP and UA if missing
+    client_host = request.client.host if request.client else None
+    if not payload.ip:
+        payload.ip = client_host
+    ua = request.headers.get("user-agent")
+    if not payload.user_agent:
+        payload.user_agent = ua
+    # store click
+    click = crud.record_affiliate_click(db=db, click_in=payload)
+    # Optionally: fire analytics event to central analytics endpoint (if present)
+    try:
+        analytics_payload = {
+            "event": "affiliate_click",
+            "properties": {
+                "link_id": payload.link_id,
+                "click_id": click.id,
+                "uni": payload.metadata.get("uni") if payload.metadata else None,
+                "category": payload.metadata.get("category") if payload.metadata else None
+            },
+            "session_id": payload.session_id,
+            "user_id": payload.user_id
+        }
+        # Best practice: call internal analytics service asynchronously or via background task,
+        # but to keep this module self-contained we attempt a non-blocking fire-and-forget.
+        # If you have a queue (redis/celery) use that instead.
+        analytics_url = "http://localhost:8000/api/analytics/track"
+        # Use requests with small timeout to avoid blocking the click endpoint
+        requests.post(analytics_url, json=analytics_payload, timeout=0.8)
+    except Exception as e:
+        logger.debug("analytics fire failed: %s", e)
+    # 204 No Content - frontend can redirect using the affiliate_url it already retrieved
+    return
+
+# Extra endpoint: optional server-side redirect (secure click tracking)
+@router.get("/r/{link_id}")
+def redirect_to_affiliate(link_id: str, request: Request, db: Session = Depends(get_db)):
+    """
+    GET /api/affiliate/r/{link_id}?s=SESSION123...
+    Server side redirect which records a click, then redirects to affiliate_url. This is useful when:
+     - You want to hide the affiliate url,
+     - Need to inject server side parameters,
+     - Support trackers that require server-to-server clicks.
+    """
+    link = crud.get_affiliate_link(db=db, link_id=link_id)
+    if not link or not link.active:
+        raise HTTPException(status_code=404, detail="Affiliate link not found")
+    # record lightweight click
+    metadata = {"referrer": request.headers.get("referer")}
+    click_in = schemas.AffiliateClickCreate(
+        link_id=link_id,
+        session_id=request.query_params.get("s"),
+        user_id=request.query_params.get("u"),
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        referrer=request.headers.get("referer"),
+        metadata=metadata
+    )
+    crud.record_affiliate_click(db=db, click_in=click_in)
+    # build redirect url (allows adding subid)
+    redirect_url = services.build_affiliate_redirect(link, extra_params={"subid": request.query_params.get("s") or "unknown"})
+    return {"redirect_to": redirect_url}
+# backend/app/main.py
+import logging
+from fastapi import FastAPI
+from .database import engine, Base
+from .routers import affiliate as affiliate_router
+from . import models
+import os
+
+# Create tables if they don't exist.
+# In production, use Alembic migrations instead.
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Ediguide Monetisation - Affiliate Module", version="0.1.0")
+
+# Routers
+app.include_router(affiliate_router.router)
+
+# lightweight health check
+@app.get("/_health")
+def health():
+    return {"status": "ok"}
+
+# If you implement the analytics endpoint in Module 2, it will live at /api/analytics/track
+# This repo intentionally doesn't implement analytics here (separate module), but affiliate code attempts
+# to call it if available (to demonstrate integration).
+-- backend/migrations/0003_create_affiliate_tables.sql
+-- SQL to create affiliates, affiliate_links, affiliate_clicks tables (Postgres)
+
+CREATE TABLE IF NOT EXISTS affiliates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(255) NOT NULL UNIQUE,
+  network VARCHAR(100),
+  config JSONB,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS affiliate_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  affiliate_id uuid NOT NULL REFERENCES affiliates(id) ON DELETE CASCADE,
+  uni VARCHAR(255),
+  category VARCHAR(255),
+  title VARCHAR(512) NOT NULL,
+  destination_url TEXT NOT NULL,
+  affiliate_url TEXT NOT NULL,
+  meta JSONB,
+  active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_affiliate_affiliate_url ON affiliate_links(affiliate_id, affiliate_url);
+
+CREATE TABLE IF NOT EXISTS affiliate_clicks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  link_id uuid NOT NULL REFERENCES affiliate_links(id) ON DELETE CASCADE,
+  session_id VARCHAR(128),
+  user_id VARCHAR(128),
+  ip VARCHAR(64),
+  user_agent VARCHAR(1024),
+  referrer TEXT,
+  metadata JSONB,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_affiliate_links_uni ON affiliate_links(uni);
+CREATE INDEX IF NOT EXISTS idx_affiliate_links_category ON affiliate_links(category);
+CREATE INDEX IF NOT EXISTS idx_affiliate_clicks_link_id ON affiliate_clicks(link_id);
+// frontend/src/lib/analytics.js
+// Lightweight analytics helper used by modules. Integrates with module 2's /api/analytics/track endpoint.
+
+export async function trackEvent(eventName, properties = {}, sessionId = null, userId = null) {
+  const payload = {
+    event: eventName,
+    properties,
+    session_id: sessionId,
+    user_id: userId
+  };
+  // Non-blocking fire-and-forget
+  try {
+    fetch("/api/analytics/track", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload),
+      // don't wait for response: set keepalive for unload scenarios
+      keepalive: true
+    });
+  } catch (err) {
+    // swallow errors in client tracking
+    console.debug("trackEvent failed", err);
+  }
+}
+
+export function getSessionId() {
+  try {
+    let s = localStorage.getItem("ediguide_session");
+    if (!s) {
+      s = "s-" + Math.random().toString(36).slice(2, 12);
+      localStorage.setItem("ediguide_session", s);
+    }
+    return s;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function getUserId() {
+  try {
+    return localStorage.getItem("ediguide_user") || null;
+  } catch (e) {
+    return null;
+  }
+}
+// frontend/src/components/AffiliateRecommendation.jsx
+import React, { useEffect, useState } from "react";
+import PropTypes from "prop-types";
+import { trackEvent, getSessionId, getUserId } from "../lib/analytics";
+
+/**
+ * AffiliateRecommendation
+ * Props:
+ *  - uni: university slug (string)
+ *  - category: product category (string)
+ *  - limit: number
+ *
+ * Behavior:
+ *  - fetches /api/affiliate/recommendations?uni=...&cat=...
+ *  - displays a list of cards (title, price if meta.price, image optional)
+ *  - on click: POST /api/affiliate/click (records click), then redirect to affiliate_url in same tab
+ *  - tracks analytics event client-side
+ */
+export default function AffiliateRecommendation({ uni, category, limit = 4 }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const params = new URLSearchParams();
+        if (uni) params.append("uni", uni);
+        if (category) params.append("cat", category);
+        params.append("limit", limit);
+        const res = await fetch(`/api/affiliate/recommendations?${params.toString()}`);
+        if (!res.ok) throw new Error("failed to load");
+        const json = await res.json();
+        setItems(json);
+      } catch (err) {
+        console.error("AffiliateRecommendation load error", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [uni, category, limit]);
+
+  const onClick = async (item) => {
+    // Send click record to backend
+    try {
+      const sessionId = getSessionId();
+      const userId = getUserId();
+      // Fire analytics event locally first
+      trackEvent("affiliate_click_intent", { link_id: item.id, title: item.title, uni, category }, sessionId, userId);
+
+      await fetch("/api/affiliate/click", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          link_id: item.id,
+          session_id: sessionId,
+          user_id: userId,
+          metadata: { uni, category }
+        })
+      });
+    } catch (err) {
+      console.warn("affiliate click POST failed", err);
+    } finally {
+      // Redirect to the affiliate URL regardless of POST success/failure
+      // Use window.location.assign so the back button works as expected
+      window.location.assign(item.affiliate_url);
+    }
+  };
+
+  if (loading) {
+    return <div className="affiliate-recs">Loading recommendations…</div>;
+  }
+
+  if (!items || items.length === 0) {
+    return <div className="affiliate-recs">No recommendations available.</div>;
+  }
+
+  return (
+    <div className="affiliate-recs grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      {items.map((it) => (
+        <div key={it.id} className="card p-3 border rounded shadow-sm">
+          {it.meta && it.meta.image ? <img src={it.meta.image} alt={it.title} className="w-full h-40 object-cover mb-2" /> : null}
+          <h3 className="text-lg font-semibold">{it.title}</h3>
+          {it.meta && it.meta.price ? <div className="text-sm text-gray-600">From {it.meta.price}</div> : null}
+          <div className="mt-3">
+            <button
+              onClick={() => onClick(it)}
+              className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              aria-label={`Visit ${it.title}`}
+            >
+              View deal
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-gray-500">Affiliate partner: {it.affiliate_name || "Partner"}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+AffiliateRecommendation.propTypes = {
+  uni: PropTypes.string,
+  category: PropTypes.string,
+  limit: PropTypes.number
+};
+// frontend/src/components/AffiliateManager.jsx
+import React, { useEffect, useState } from "react";
+
+/**
+ * Minimal admin UI for managing affiliate links.
+ * In a real app, this should be behind authentication and have proper validation.
+ * This component demonstrates CRUD with the backend endpoints implied in the backend code.
+ */
+export default function AffiliateManager() {
+  const [links, setLinks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({
+    affiliate_id: "",
+    uni: "",
+    category: "",
+    title: "",
+    destination_url: "",
+    affiliate_url: "",
+    meta: ""
+  });
+
+  useEffect(() => {
+    loadLinks();
+  }, []);
+
+  async function loadLinks() {
+    setLoading(true);
+    try {
+      // This admin endpoint is not implemented in Module 3 (it belongs to Module 8),
+      // but many backends expose GET /api/affiliate/links or similar. We'll call that if available.
+      const res = await fetch("/api/admin/affiliate_links");
+      if (!res.ok) throw new Error("failed");
+      const json = await res.json();
+      setLinks(json);
+    } catch (err) {
+      console.error("loadLinks", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createLink(e) {
+    e.preventDefault();
+    try {
+      const payload = {
+        ...form,
+        meta: form.meta ? JSON.parse(form.meta) : {}
+      };
+      const res = await fetch("/api/admin/affiliate_links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error("create failed");
+      setForm({
+        affiliate_id: "",
+        uni: "",
+        category: "",
+        title: "",
+        destination_url: "",
+        affiliate_url: "",
+        meta: ""
+      });
+      await loadLinks();
+    } catch (err) {
+      alert("Create link failed: " + err.message);
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="text-xl font-bold">Affiliate Links</h2>
+      {loading ? <div>Loading…</div> : null}
+      <div className="mt-4">
+        <form onSubmit={createLink} className="grid grid-cols-1 gap-2">
+          <input placeholder="affiliate_id" value={form.affiliate_id} onChange={(e) => setForm({...form, affiliate_id: e.target.value})} />
+          <input placeholder="uni" value={form.uni} onChange={(e) => setForm({...form, uni: e.target.value})} />
+          <input placeholder="category" value={form.category} onChange={(e) => setForm({...form, category: e.target.value})} />
+          <input placeholder="title" value={form.title} onChange={(e) => setForm({...form, title: e.target.value})} />
+          <input placeholder="destination_url" value={form.destination_url} onChange={(e) => setForm({...form, destination_url: e.target.value})} />
+          <input placeholder="affiliate_url" value={form.affiliate_url} onChange={(e) => setForm({...form, affiliate_url: e.target.value})} />
+          <textarea placeholder='meta as JSON e.g. {"image":"...","price":"99"}' value={form.meta} onChange={(e) => setForm({...form, meta: e.target.value})} />
+          <button className="px-3 py-2 bg-green-600 text-white rounded">Create link</button>
+        </form>
+      </div>
+
+      <div className="mt-6">
+        <ul>
+          {links.map((l) => (
+            <li key={l.id} className="border p-2 mb-2">
+              <div><strong>{l.title}</strong> — {l.uni} / {l.category}</div>
+              <div className="text-sm text-gray-600">{l.affiliate_url}</div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+# backend/tests/test_affiliate_endpoints.py
+import pytest
+from fastapi.testclient import TestClient
+from app.main import app
+from app.database import SessionLocal, engine, Base
+from app import models
+import json
+
+client = TestClient(app)
+
+# Setup: create ephemeral tables in the test database
+# Ensure your test DATABASE_URL points to a disposable DB
+@pytest.fixture(scope="module", autouse=True)
+def setup_db():
+    # Create tables
+    Base.metadata.create_all(bind=engine)
+    yield
+    # Teardown (drop tables) - only do this in a disposable test DB
+    Base.metadata.drop_all(bind=engine)
+
+def test_create_affiliate_and_link():
+    db = SessionLocal()
+    a = models.Affiliate(name="test-aff", network="manual", config={})
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    link = models.AffiliateLink(
+        affiliate_id=a.id,
+        title="Test Product",
+        destination_url="https://merchant.example/product",
+        affiliate_url="https://aff.example/track?pid=123",
+        uni="testuni",
+        category="books",
+        meta={"price": "9.99"},
+        active=True
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    assert link.id is not None
+    db.close()
+
+def test_recommendations_endpoint():
+    res = client.get("/api/affiliate/recommendations?uni=testuni&cat=books")
+    assert res.status_code == 200
+    data = res.json()
+    assert isinstance(data, list)
+    # At least one recommendation from previous test
+    assert any(d["title"] == "Test Product" for d in data)
+
+def test_click_endpoint_records_click():
+    # Fetch a link id first
+    res = client.get("/api/affiliate/recommendations?uni=testuni&cat=books")
+    assert res.ok
+    data = res.json()
+    assert data
+    link_id = data[0]["id"]
+    # Post click
+    payload = {
+        "link_id": link_id,
+        "session_id": "s-abc123",
+        "user_id": "u-1",
+        "metadata": {"uni": "testuni", "category": "books"}
+    }
+    res = client.post("/api/affiliate/click", json=payload)
+    assert res.status_code in (204, 200)
+# backend/Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY ./backend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY ./backend /app
+# docker-compose.yml
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ediguide
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/ediguide
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: ediguide
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+      - name: Install deps
+        run: |
+          pip install -r backend/requirements.txt
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ediguide
+        run: |
+          pytest -q
+
+ENV PYTHONUNBUFFERED=1
+ENV DATABASE_URL=postgresql://postgres:postgres@db:5432/ediguide
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+fastapi==0.95.2
+uvicorn[standard]==0.21.1
+SQLAlchemy==1.4.50
+psycopg2-binary==2.9.6
+requests==2.31.0
+pydantic==1.10.9
+python-dotenv==1.0.0

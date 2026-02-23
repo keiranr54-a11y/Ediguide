@@ -11334,3 +11334,1172 @@ export const ROICalculator: React.FC = () => {
 };
 
 export default ROICalculator;
+backend/
+├── app/
+│   ├── __init__.py
+│   ├── main.py                     # FastAPI app factory
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py                # Settings (Pydantic settings)
+│   │   ├── calculator.py             # Core financial calculations
+│   │   ├── models.py                 # Pydantic schemas (request/response)
+│   │   ├── exceptions.py             # Custom exception classes
+│   │   └── dependencies.py           # FastAPI dependencies (DB session)
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── routes/
+│   │       ├── __init__.py
+│   │       └── roi.py                 # /api/roi/calculate endpoint
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── base.py                    # SQLAlchemy Base and session
+│   │   ├── models.py                   # SQLAlchemy ORM models
+│   │   └── repositories.py             # Data access layer
+│   └── services/
+│       ├── __init__.py
+│       └── roi_service.py              # Orchestrates calculation + DB
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py                    # Pytest fixtures
+│   ├── test_calculator.py              # Unit tests for core calculations
+│   └── test_roi_api.py                 # Integration tests for API
+├── alembic/                             # Migrations (placeholder)
+│   └── versions/
+├── scripts/
+│   └── seed_data.py                     # Seed initial tables
+├── requirements.txt
+├── README.md
+└── .env.example
+"""
+Application settings loaded from environment variables.
+"""
+from pydantic_settings import BaseSettings
+from pydantic import Field, PostgresDsn, field_validator
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    # Database
+    POSTGRES_USER: str = Field("postgres", env="POSTGRES_USER")
+    POSTGRES_PASSWORD: str = Field("postgres", env="POSTGRES_PASSWORD")
+    POSTGRES_HOST: str = Field("localhost", env="POSTGRES_HOST")
+    POSTGRES_PORT: int = Field(5432, env="POSTGRES_PORT")
+    POSTGRES_DB: str = Field("ediguide", env="POSTGRES_DB")
+    DATABASE_URL: Optional[PostgresDsn] = None
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def assemble_db_connection(cls, v: Optional[str], values) -> str:
+        if isinstance(v, str):
+            return v
+        # Build from components
+        user = values.data.get("POSTGRES_USER")
+        password = values.data.get("POSTGRES_PASSWORD")
+        host = values.data.get("POSTGRES_HOST")
+        port = values.data.get("POSTGRES_PORT")
+        db = values.data.get("POSTGRES_DB")
+        return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+
+    # API
+    API_V1_STR: str = "/api/v1"
+    PROJECT_NAME: str = "Ediguide ROI Calculator"
+
+    # Security
+    SECRET_KEY: str = Field("change-this-in-production", env="SECRET_KEY")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    # Calculation parameters
+    DEFAULT_DISCOUNT_RATE: float = 0.035  # 3.5%
+    DEFAULT_CAREER_YEARS: int = 40
+    DEFAULT_INFLATION_TARGET_YEAR: int = 2026
+    SUBJECT_WEIGHT: float = 0.7
+    INSTITUTION_WEIGHT: float = 0.3
+
+    # Regional opportunity wage (if not found in DB)
+    FALLBACK_OPPORTUNITY_WAGE: float = 20_000.0
+    FALLBACK_LIVING_COST: float = 12_000.0
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+
+
+settings = Settings()
+"""
+Domain-specific exceptions for the ROI calculator.
+"""
+
+
+class EdiguideBaseException(Exception):
+    """Base exception for all ediguide errors."""
+    pass
+
+
+class UniversityNotFoundError(EdiguideBaseException):
+    """Raised when a requested university does not exist."""
+    pass
+
+
+class SubjectNotFoundError(EdiguideBaseException):
+    """Raised when a requested subject does not exist."""
+    pass
+
+
+class RegionNotFoundError(EdiguideBaseException):
+    """Raised when regional data for a given region is missing."""
+    pass
+
+
+class DegreeLevelNotFoundError(EdiguideBaseException):
+    """Raised when degree level configuration is missing."""
+    pass
+
+
+class InvalidInputError(EdiguideBaseException):
+    """Raised when input parameters are invalid."""
+    pass
+
+
+class CalculationError(EdiguideBaseException):
+    """Raised when a calculation fails (e.g., division by zero)."""
+    pass
+"""
+SQLAlchemy ORM models for database tables.
+"""
+from sqlalchemy import (
+    Column, Integer, String, Float, ForeignKey, Date, Boolean, Text, JSON, Numeric
+)
+from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+from app.db.base import Base
+
+
+class University(Base):
+    __tablename__ = "universities"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, unique=True)
+    slug = Column(String(100), nullable=False, unique=True, index=True)
+    region = Column(String(100), nullable=False)  # e.g., "London", "South East"
+    composite_score = Column(Float)               # from your ranking table
+    roi_undergrad = Column(Float)                  # institutional ROI % (e.g., 271)
+    roi_postgrad = Column(Float)                    # for Master's as terminal
+    roi_phd = Column(Float)                         # for PhD as terminal
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    # Relationships
+    subject_strengths = relationship("SubjectStrength", back_populates="university")
+
+
+class Subject(Base):
+    __tablename__ = "subjects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, unique=True)
+    slug = Column(String(100), nullable=False, unique=True, index=True)
+    category = Column(String(100))                  # e.g., "STEM", "Humanities"
+    roi_ba = Column(Float)                           # subject ROI % for Bachelor's
+    roi_ma = Column(Float)                           # for Master's
+    roi_phd = Column(Float)                          # for PhD
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+
+class RegionalCost(Base):
+    __tablename__ = "regional_costs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    region = Column(String(100), nullable=False, unique=True, index=True)
+    living_cost_per_year = Column(Float, nullable=False)      # e.g., 11500
+    opportunity_wage_per_year = Column(Float, nullable=False) # e.g., 19500
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+
+class InflationFactor(Base):
+    __tablename__ = "inflation_factors"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    year = Column(Integer, nullable=False, unique=True)
+    factor = Column(Float, nullable=False)                    # multiplier to convert to target year
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class DegreeLevel(Base):
+    __tablename__ = "degree_levels"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    level = Column(String(50), nullable=False, unique=True)   # 'bachelors', 'masters', 'phd'
+    years = Column(Integer, nullable=False)                    # e.g., 3, 1, 3 (additional)
+    tuition_per_year = Column(Float, nullable=False)           # average tuition for home students
+    books_per_year = Column(Float, default=1000.0)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class SubjectStrength(Base):
+    """Many-to-many relationship between universities and subjects with strength."""
+    __tablename__ = "subject_strengths"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    university_id = Column(UUID(as_uuid=True), ForeignKey("universities.id"))
+    subject_id = Column(UUID(as_uuid=True), ForeignKey("subjects.id"))
+    strength = Column(Float)  # optional multiplier (not used directly in ROI)
+    created_at = Column(DateTime, server_default=func.now())
+"""
+Pydantic models for request/response validation.
+"""
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+from typing import Optional, Literal, List
+from uuid import UUID
+from datetime import date
+
+
+# ---------- Request Schemas ----------
+class ROICalculationRequest(BaseModel):
+    university_slug: str = Field(..., description="Slug of the university")
+    subject_slug: str = Field(..., description="Slug of the degree subject")
+    degree_level: Literal["bachelors", "masters", "phd"] = Field(
+        ..., description="Level of study"
+    )
+    residency_status: Literal["home", "international"] = Field(
+        ..., description="Residency for tuition purposes"
+    )
+    funding: Optional[Literal["loans", "scholarship", "parental"]] = Field(
+        None, description="Funding situation"
+    )
+    include_opportunity_cost: bool = Field(
+        True, description="Include foregone earnings in investment"
+    )
+    discount_rate: Optional[float] = Field(
+        None, description="Custom discount rate (decimal), defaults to 3.5%"
+    )
+
+    @field_validator("discount_rate")
+    @classmethod
+    def validate_discount_rate(cls, v):
+        if v is not None and (v < 0 or v > 0.2):
+            raise ValueError("Discount rate must be between 0 and 0.2")
+        return v
+
+
+# ---------- Response Schemas ----------
+class InvestmentBreakdown(BaseModel):
+    tuition_total: float
+    books_total: float
+    living_cost_total: float
+    opportunity_cost_total: float
+    total_investment: float
+
+
+class EarningsTrajectoryPoint(BaseModel):
+    year: int
+    age: int
+    earnings_premium: float          # discounted if requested
+    cumulative_discounted_premium: float
+
+
+class ROICalculationResponse(BaseModel):
+    request_id: UUID = Field(default_factory=uuid.uuid4)
+    university_name: str
+    subject_name: str
+    degree_level: str
+    residency_status: str
+    investment_breakdown: InvestmentBreakdown
+    combined_roi_percent: float      # e.g., 199.4
+    lifetime_net_gain: float          # NPV in target year pounds
+    annualised_equivalent: float
+    payback_years: Optional[float]
+    roi_multiplier: float
+    earnings_trajectory: List[EarningsTrajectoryPoint]
+    inflation_adjusted_to_year: int
+    discount_rate_used: float
+    calculation_timestamp: date = Field(default_factory=date.today)
+
+
+class ErrorResponse(BaseModel):
+    detail: str
+    error_code: Optional[str] = None
+"""
+Core financial calculation functions for ROI, NPV, payback period.
+All functions are stateless and operate on pre‑fetched data.
+"""
+import math
+import logging
+from typing import List, Tuple, Optional
+from app.core.exceptions import CalculationError
+
+logger = logging.getLogger(__name__)
+
+
+def calculate_total_investment(
+    years: int,
+    tuition_per_year: float,
+    books_per_year: float,
+    living_cost_per_year: float,
+    opportunity_wage_per_year: float,
+    include_opportunity_cost: bool = True,
+) -> float:
+    """
+    Compute total direct and opportunity cost.
+
+    Args:
+        years: Number of years of study
+        tuition_per_year: Annual tuition fee
+        books_per_year: Annual cost of books/supplies
+        living_cost_per_year: Annual regional living cost
+        opportunity_wage_per_year: Annual foregone earnings (non‑graduate wage)
+        include_opportunity_cost: Whether to include foregone earnings
+
+    Returns:
+        Total investment in current pounds.
+    """
+    try:
+        direct = (tuition_per_year + books_per_year) * years
+        living = living_cost_per_year * years
+        opp = opportunity_wage_per_year * years if include_opportunity_cost else 0.0
+        return direct + living + opp
+    except Exception as e:
+        logger.error(f"Investment calculation failed: {e}")
+        raise CalculationError("Could not compute total investment") from e
+
+
+def combined_roi(
+    subject_roi: float, institution_roi: float, subject_weight: float = 0.7
+) -> float:
+    """
+    Weighted average of subject and institutional ROI.
+    """
+    inst_weight = 1.0 - subject_weight
+    return subject_roi * subject_weight + institution_roi * inst_weight
+
+
+def earnings_trajectory_multipliers(career_years: int = 40) -> List[float]:
+    """
+    Returns a list of multipliers for each career year based on typical progression.
+    Entry (0-5): 50% of average premium
+    Mid (6-15): 110%
+    Peak (16-30): 140%
+    Late (31-40): 100%
+    """
+    mult = []
+    for y in range(1, career_years + 1):
+        if y <= 5:
+            mult.append(0.5)
+        elif y <= 15:
+            mult.append(1.1)
+        elif y <= 30:
+            mult.append(1.4)
+        else:
+            mult.append(1.0)
+    return mult
+
+
+def net_present_value(
+    investment: float,
+    avg_annual_premium: float,
+    discount_rate: float,
+    career_years: int = 40,
+    trajectory_multipliers: Optional[List[float]] = None,
+) -> Tuple[float, List[float]]:
+    """
+    Compute NPV of earnings premiums over a career.
+
+    Args:
+        investment: Total cost (to subtract at end)
+        avg_annual_premium: Average yearly earnings premium (undiscounted)
+        discount_rate: Annual discount rate (decimal)
+        career_years: Number of years in workforce
+        trajectory_multipliers: Yearly multipliers to shape earnings curve
+
+    Returns:
+        (npv, list_of_discounted_premiums_per_year)
+    """
+    if career_years <= 0:
+        return 0.0, []
+    if trajectory_multipliers is None:
+        trajectory_multipliers = earnings_trajectory_multipliers(career_years)
+    if len(trajectory_multipliers) != career_years:
+        raise CalculationError("Trajectory multipliers length mismatch")
+
+    discounted_premiums = []
+    cumulative = 0.0
+    for year, mult in enumerate(trajectory_multipliers, start=1):
+        premium = avg_annual_premium * mult
+        discounted = premium / ((1 + discount_rate) ** year)
+        discounted_premiums.append(discounted)
+        cumulative += discounted
+
+    npv = cumulative - investment
+    return npv, discounted_premiums
+
+
+def payback_period(
+    investment: float,
+    avg_annual_premium: float,
+    discount_rate: float,
+    career_years: int = 40,
+    trajectory_multipliers: Optional[List[float]] = None,
+) -> Optional[float]:
+    """
+    Calculate the number of years until cumulative discounted premiums exceed investment.
+    Returns None if never paid back within career.
+    """
+    if investment <= 0:
+        return 0.0
+    if trajectory_multipliers is None:
+        trajectory_multipliers = earnings_trajectory_multipliers(career_years)
+
+    cumulative = 0.0
+    for year, mult in enumerate(trajectory_multipliers, start=1):
+        premium = avg_annual_premium * mult
+        discounted = premium / ((1 + discount_rate) ** year)
+        cumulative += discounted
+        if cumulative >= investment:
+            # Linear interpolation for partial year
+            prev_cumulative = cumulative - discounted
+            excess_needed = investment - prev_cumulative
+            fraction = excess_needed / discounted if discounted != 0 else 0
+            return (year - 1) + fraction
+    return None  # Not paid back
+
+
+def inflation_adjustment(amount: float, from_year: int, to_year: int, factors: dict) -> float:
+    """
+    Apply inflation factor to convert amount from one year to another.
+    Factors dict should map year -> multiplier (e.g., 2024: 1.00, 2026: 1.04)
+    """
+    if from_year == to_year:
+        return amount
+    if from_year not in factors or to_year not in factors:
+        raise CalculationError(f"Inflation factors missing for {from_year} or {to_year}")
+    # Multiply by (factor_to / factor_from)
+    return amount * (factors[to_year] / factors[from_year])
+
+
+def annualised_equivalent(npv: float, career_years: int, discount_rate: float) -> float:
+    """
+    Convert NPV to a constant annual payment over career_years using annuity formula.
+    Equivalent to: npv * r / (1 - (1+r)^-n)
+    """
+    if career_years <= 0:
+        return 0.0
+    if abs(discount_rate) < 1e-9:
+        return npv / career_years
+    annuity_factor = (1 - (1 + discount_rate) ** -career_years) / discount_rate
+    return npv / annuity_factor if annuity_factor != 0 else 0.0
+
+
+def roi_multiplier(npv: float, investment: float) -> float:
+    """Return ratio of NPV to investment (e.g., 2.71x)."""
+    if investment == 0:
+        return 0.0
+    return npv / investment
+"""
+Repository classes for database access. Each method returns data or raises custom exceptions.
+"""
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
+from typing import Optional, Dict
+import logging
+
+from app.db.models import University, Subject, RegionalCost, InflationFactor, DegreeLevel
+from app.core.exceptions import (
+    UniversityNotFoundError,
+    SubjectNotFoundError,
+    RegionNotFoundError,
+    DegreeLevelNotFoundError,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class UniversityRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_slug(self, slug: str) -> University:
+        result = await self.session.execute(
+            select(University).where(University.slug == slug)
+        )
+        uni = result.scalar_one_or_none()
+        if not uni:
+            logger.warning(f"University not found: {slug}")
+            raise UniversityNotFoundError(f"University '{slug}' does not exist")
+        return uni
+
+
+class SubjectRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_slug(self, slug: str) -> Subject:
+        result = await self.session.execute(
+            select(Subject).where(Subject.slug == slug)
+        )
+        subj = result.scalar_one_or_none()
+        if not subj:
+            logger.warning(f"Subject not found: {slug}")
+            raise SubjectNotFoundError(f"Subject '{slug}' does not exist")
+        return subj
+
+
+class RegionalCostRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_region(self, region: str) -> RegionalCost:
+        result = await self.session.execute(
+            select(RegionalCost).where(RegionalCost.region == region)
+        )
+        cost = result.scalar_one_or_none()
+        if not cost:
+            logger.warning(f"Regional cost data missing for: {region}")
+            raise RegionNotFoundError(f"Regional data for '{region}' not found")
+        return cost
+
+
+class InflationRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_factors_as_dict(self) -> Dict[int, float]:
+        result = await self.session.execute(select(InflationFactor))
+        rows = result.scalars().all()
+        return {row.year: row.factor for row in rows}
+
+
+class DegreeLevelRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_level(self, level: str) -> DegreeLevel:
+        result = await self.session.execute(
+            select(DegreeLevel).where(DegreeLevel.level == level)
+        )
+        dl = result.scalar_one_or_none()
+        if not dl:
+            raise DegreeLevelNotFoundError(f"Degree level '{level}' not configured")
+        return dl
+"""
+Orchestrates the ROI calculation: fetches data, runs core calculations, builds response.
+"""
+import logging
+from typing import Optional
+from uuid import uuid4
+
+from app.core import calculator
+from app.core.models import (
+    ROICalculationRequest,
+    ROICalculationResponse,
+    InvestmentBreakdown,
+    EarningsTrajectoryPoint,
+)
+from app.core.config import settings
+from app.core.exceptions import EdiguideBaseException, CalculationError
+from app.db.repositories import (
+    UniversityRepository,
+    SubjectRepository,
+    RegionalCostRepository,
+    InflationRepository,
+    DegreeLevelRepository,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
+
+
+class ROIService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.uni_repo = UniversityRepository(db)
+        self.subj_repo = SubjectRepository(db)
+        self.region_repo = RegionalCostRepository(db)
+        self.inflation_repo = InflationRepository(db)
+        self.degree_repo = DegreeLevelRepository(db)
+
+    async def calculate(self, req: ROICalculationRequest) -> ROICalculationResponse:
+        """
+        Main entry point: validate inputs, fetch data, compute, return response.
+        """
+        try:
+            # 1. Fetch core entities
+            university = await self.uni_repo.get_by_slug(req.university_slug)
+            subject = await self.subj_repo.get_by_slug(req.subject_slug)
+            degree_config = await self.degree_repo.get_by_level(req.degree_level)
+
+            # 2. Determine which ROI fields to use based on degree level
+            if req.degree_level == "bachelors":
+                inst_roi = university.roi_undergrad
+                subj_roi = subject.roi_ba
+            elif req.degree_level == "masters":
+                inst_roi = university.roi_postgrad
+                subj_roi = subject.roi_ma
+            else:  # phd
+                inst_roi = university.roi_phd
+                subj_roi = subject.roi_phd
+
+            if inst_roi is None or subj_roi is None:
+                raise CalculationError(f"ROI data missing for {req.degree_level} level")
+
+            # 3. Regional costs
+            region_data = await self.region_repo.get_by_region(university.region)
+
+            # 4. Inflation factors
+            inflation_factors = await self.inflation_repo.get_factors_as_dict()
+            target_year = settings.DEFAULT_INFLATION_TARGET_YEAR
+            current_year = 2024  # could be dynamic; for now fixed
+
+            # 5. Compute total investment
+            years = degree_config.years
+            tuition = degree_config.tuition_per_year
+            books = degree_config.books_per_year
+            living = region_data.living_cost_per_year
+            opp_wage = region_data.opportunity_wage_per_year
+
+            total_investment = calculator.calculate_total_investment(
+                years=years,
+                tuition_per_year=tuition,
+                books_per_year=books,
+                living_cost_per_year=living,
+                opportunity_wage_per_year=opp_wage,
+                include_opportunity_cost=req.include_opportunity_cost,
+            )
+
+            # 6. Combined ROI
+            comb_roi = calculator.combined_roi(
+                subj_roi, inst_roi, settings.SUBJECT_WEIGHT
+            )
+
+            # 7. Average annual premium (undiscounted)
+            # lifetime premium = investment * (comb_roi / 100)
+            lifetime_premium = total_investment * (comb_roi / 100.0)
+            avg_annual_premium = lifetime_premium / settings.DEFAULT_CAREER_YEARS
+
+            # 8. NPV and trajectory
+            discount_rate = req.discount_rate or settings.DEFAULT_DISCOUNT_RATE
+            career_years = settings.DEFAULT_CAREER_YEARS
+            multipliers = calculator.earnings_trajectory_multipliers(career_years)
+
+            npv, discounted_premiums = calculator.net_present_value(
+                investment=total_investment,
+                avg_annual_premium=avg_annual_premium,
+                discount_rate=discount_rate,
+                career_years=career_years,
+                trajectory_multipliers=multipliers,
+            )
+
+            # 9. Payback period
+            payback = calculator.payback_period(
+                investment=total_investment,
+                avg_annual_premium=avg_annual_premium,
+                discount_rate=discount_rate,
+                career_years=career_years,
+                trajectory_multipliers=multipliers,
+            )
+
+            # 10. Inflation adjustment to target year
+            npv_inflated = calculator.inflation_adjustment(
+                npv, current_year, target_year, inflation_factors
+            )
+
+            # 11. Annualised equivalent (using discounted premiums after inflation? simpler: annualise inflated NPV)
+            annualised = calculator.annualised_equivalent(
+                npv_inflated, career_years, discount_rate
+            )
+
+            # 12. ROI multiplier
+            mult = calculator.roi_multiplier(npv_inflated, total_investment)
+
+            # 13. Build earnings trajectory for response (first 10 years as example, or full)
+            trajectory_points = []
+            for i, disc in enumerate(discounted_premiums[:10], start=1):
+                # Age approx: 21 + i after graduation
+                point = EarningsTrajectoryPoint(
+                    year=i,
+                    age=21 + i,
+                    earnings_premium=disc,
+                    cumulative_discounted_premium=sum(discounted_premiums[:i]),
+                )
+                trajectory_points.append(point)
+
+            # 14. Investment breakdown
+            breakdown = InvestmentBreakdown(
+                tuition_total=tuition * years,
+                books_total=books * years,
+                living_cost_total=living * years,
+                opportunity_cost_total=opp_wage * years if req.include_opportunity_cost else 0.0,
+                total_investment=total_investment,
+            )
+
+            # 15. Build response
+            response = ROICalculationResponse(
+                request_id=uuid4(),
+                university_name=university.name,
+                subject_name=subject.name,
+                degree_level=req.degree_level,
+                residency_status=req.residency_status,
+                investment_breakdown=breakdown,
+                combined_roi_percent=comb_roi,
+                lifetime_net_gain=npv_inflated,
+                annualised_equivalent=annualised,
+                payback_years=payback,
+                roi_multiplier=mult,
+                earnings_trajectory=trajectory_points,
+                inflation_adjusted_to_year=target_year,
+                discount_rate_used=discount_rate,
+            )
+            return response
+
+        except EdiguideBaseException:
+            # Re-raise domain exceptions to be caught by error handlers
+            raise
+        except Exception as e:
+            logger.exception("Unexpected error in ROI calculation")
+            raise CalculationError("Internal calculation error") from e
+"""
+API endpoints for ROI calculator.
+"""
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.models import ROICalculationRequest, ROICalculationResponse, ErrorResponse
+from app.services.roi_service import ROIService
+from app.db.base import get_session
+from app.core.exceptions import (
+    UniversityNotFoundError,
+    SubjectNotFoundError,
+    RegionNotFoundError,
+    DegreeLevelNotFoundError,
+    InvalidInputError,
+    CalculationError,
+)
+import logging
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/roi", tags=["ROI Calculator"])
+
+
+@router.post(
+    "/calculate",
+    response_model=ROICalculationResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Entity not found"},
+        400: {"model": ErrorResponse, "description": "Invalid input"},
+        500: {"model": ErrorResponse, "description": "Calculation error"},
+    },
+)
+async def calculate_roi(
+    request: ROICalculationRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Calculate the return on investment for a specific university and subject combination.
+    """
+    service = ROIService(db)
+    try:
+        result = await service.calculate(request)
+        return result
+    except UniversityNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except SubjectNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except RegionNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DegreeLevelNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except InvalidInputError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except CalculationError as e:
+        logger.exception("Calculation failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred during calculation. Please try again later.",
+        )
+    except Exception as e:
+        logger.exception("Unexpected error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error.",
+        )
+"""
+Database engine, session factory, and dependency injection.
+"""
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
+from app.core.config import settings
+
+# Convert postgresql:// to postgresql+asyncpg://
+async_db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+engine = create_async_engine(async_db_url, echo=False, future=True)
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+Base = declarative_base()
+
+
+async def get_session() -> AsyncSession:
+    """
+    Dependency that provides an async database session.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+"""
+FastAPI application factory.
+"""
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes import roi
+from app.core.config import settings
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title=settings.PROJECT_NAME,
+        version="1.0.0",
+        openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    )
+
+    # Set up CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # tighten in production
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Include routers
+    app.include_router(roi.router, prefix=settings.API_V1_STR)
+
+    @app.get("/health")
+    async def health_check():
+        return {"status": "ok"}
+
+    return app
+
+
+app = create_app()
+"""
+Unit tests for core calculator functions.
+"""
+import pytest
+from app.core.calculator import (
+    calculate_total_investment,
+    combined_roi,
+    earnings_trajectory_multipliers,
+    net_present_value,
+    payback_period,
+    annualised_equivalent,
+    roi_multiplier,
+    inflation_adjustment,
+)
+from app.core.exceptions import CalculationError
+
+
+def test_total_investment():
+    inv = calculate_total_investment(
+        years=3,
+        tuition_per_year=9250,
+        books_per_year=1000,
+        living_cost_per_year=12000,
+        opportunity_wage_per_year=20000,
+        include_opportunity_cost=True,
+    )
+    expected = (9250 + 1000) * 3 + 12000 * 3 + 20000 * 3
+    assert inv == expected
+
+
+def test_combined_roi():
+    result = combined_roi(160, 195.8, subject_weight=0.7)
+    expected = 160 * 0.7 + 195.8 * 0.3
+    assert result == pytest.approx(expected)
+
+
+def test_trajectory_multipliers():
+    mults = earnings_trajectory_multipliers(40)
+    assert len(mults) == 40
+    assert mults[0] == 0.5      # year 1
+    assert mults[4] == 0.5      # year 5
+    assert mults[5] == 1.1      # year 6
+    assert mults[14] == 1.1     # year 15
+    assert mults[15] == 1.4     # year 16
+    assert mults[29] == 1.4     # year 30
+    assert mults[30] == 1.0     # year 31
+
+
+def test_npv_basic():
+    inv = 100000
+    avg_premium = 5000
+    discount = 0.035
+    npv, discs = net_present_value(inv, avg_premium, discount, career_years=40)
+    # Manual approximate check: first year premium = 2500, discounted ~ 2415, sum over 40 ~ some value > inv? Actually should be positive if avg_premium high enough.
+    assert npv > 0
+    assert len(discs) == 40
+
+
+def test_payback_period():
+    inv = 100000
+    avg_premium = 10000
+    discount = 0.0   # zero discount simplifies
+    mults = [1.0] * 40   # constant premium
+    payback = payback_period(inv, avg_premium, discount, career_years=40, trajectory_multipliers=mults)
+    # With no discount and constant 10k/year, payback = 10 years exactly
+    assert payback == 10.0
+
+    # With discount, payback > 10
+    payback2 = payback_period(inv, avg_premium, 0.035, career_years=40, trajectory_multipliers=mults)
+    assert payback2 > 10.0
+
+
+def test_annualised_equivalent():
+    npv_val = 100000
+    career = 40
+    rate = 0.035
+    ann = annualised_equivalent(npv_val, career, rate)
+    # Reconstruct NPV from annuity: sum_{t=1..40} ann/(1+rate)^t should approx npv
+    reconstructed = sum(ann / ((1+rate)**t) for t in range(1, career+1))
+    assert reconstructed == pytest.approx(npv_val, rel=1e-2)
+
+
+def test_roi_multiplier():
+    assert roi_multiplier(200000, 100000) == 2.0
+    assert roi_multiplier(0, 1000) == 0.0
+
+
+def test_inflation_adjustment():
+    factors = {2024: 1.0, 2026: 1.04}
+    result = inflation_adjustment(1000, 2024, 2026, factors)
+    assert result == 1040.0
+
+    with pytest.raises(CalculationError):
+        inflation_adjustment(1000, 2024, 2027, factors)
+"""
+Integration tests for the ROI API endpoint using a test database.
+"""
+import pytest
+from httpx import AsyncClient
+from app.main import app
+from app.db.base import get_session, Base
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.core.config import settings
+from app.db.models import University, Subject, RegionalCost, InflationFactor, DegreeLevel
+
+# Use a separate test database
+TEST_DATABASE_URL = settings.DATABASE_URL.replace("ediguide", "ediguide_test")
+TEST_ASYNC_DB_URL = TEST_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+test_engine = create_async_engine(TEST_ASYNC_DB_URL)
+TestSessionLocal = async_sessionmaker(test_engine, expire_on_commit=False)
+
+
+async def override_get_session():
+    async with TestSessionLocal() as session:
+        yield session
+
+
+app.dependency_overrides[get_session] = override_get_session
+
+
+@pytest.fixture(autouse=True)
+async def setup_database():
+    # Create tables
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Seed test data
+    async with TestSessionLocal() as session:
+        uni = University(
+            slug="warwick",
+            name="University of Warwick",
+            region="West Midlands",
+            roi_undergrad=271.0,
+        )
+        subject = Subject(
+            slug="politics",
+            name="Politics",
+            roi_ba=185.0,
+        )
+        region = RegionalCost(
+            region="West Midlands",
+            living_cost_per_year=11500,
+            opportunity_wage_per_year=19500,
+        )
+        inf1 = InflationFactor(year=2024, factor=1.0)
+        inf2 = InflationFactor(year=2026, factor=1.04)
+        bachelors = DegreeLevel(level="bachelors", years=3, tuition_per_year=9250, books_per_year=1000)
+
+        session.add_all([uni, subject, region, inf1, inf2, bachelors])
+        await session.commit()
+
+    yield
+
+
+@pytest.mark.anyio
+async def test_calculate_roi_endpoint():
+    payload = {
+        "university_slug": "warwick",
+        "subject_slug": "politics",
+        "degree_level": "bachelors",
+        "residency_status": "home",
+        "funding": "loans",
+        "include_opportunity_cost": True,
+        "discount_rate": 0.035,
+    }
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        response = await client.post("/api/v1/roi/calculate", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["university_name"] == "University of Warwick"
+    assert data["subject_name"] == "Politics"
+    assert data["combined_roi_percent"] == pytest.approx(185*0.7 + 271*0.3)
+    assert data["lifetime_net_gain"] > 0
+    assert "investment_breakdown" in data
+#!/usr/bin/env python
+"""
+Populate database with initial data from the Ediguide PDF.
+Run with: python -m scripts.seed_data
+"""
+import asyncio
+import asyncpg
+from app.core.config import settings
+from app.db.models import (
+    University, Subject, RegionalCost, InflationFactor, DegreeLevel
+)
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy import select
+
+# Use the sync connection for seeding? We'll use asyncpg directly for simplicity.
+# Alternatively, use SQLAlchemy Core.
+
+UNIVERSITIES = [
+    {"slug": "oxford", "name": "University of Oxford", "region": "South East", "roi_undergrad": 356.0},
+    {"slug": "cambridge", "name": "University of Cambridge", "region": "South East", "roi_undergrad": 352.0},
+    {"slug": "warwick", "name": "University of Warwick", "region": "West Midlands", "roi_undergrad": 271.0},
+    # ... add all from PDF table
+]
+
+SUBJECTS = [
+    {"slug": "medicine", "name": "Medicine", "roi_ba": 567.0, "roi_ma": 642.0, "roi_phd": 100.0},
+    {"slug": "economics", "name": "Economics", "roi_ba": 400.0, "roi_ma": 500.0, "roi_phd": 200.0},
+    # ... add all from PDF
+]
+
+REGIONS = [
+    {"region": "London", "living_cost_per_year": 16000, "opportunity_wage_per_year": 22000},
+    {"region": "South East", "living_cost_per_year": 14000, "opportunity_wage_per_year": 21000},
+    {"region": "West Midlands", "living_cost_per_year": 11500, "opportunity_wage_per_year": 19500},
+    # ... etc.
+]
+
+INFLATION = [
+    {"year": 2024, "factor": 1.00},
+    {"year": 2025, "factor": 1.02},
+    {"year": 2026, "factor": 1.04},
+]
+
+DEGREE_LEVELS = [
+    {"level": "bachelors", "years": 3, "tuition_per_year": 9250, "books_per_year": 1000},
+    {"level": "masters", "years": 1, "tuition_per_year": 12000, "books_per_year": 800},
+    {"level": "phd", "years": 3, "tuition_per_year": 5000, "books_per_year": 500},
+]
+
+
+async def seed():
+    conn = await asyncpg.connect(settings.DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        # Clear tables (careful order)
+        await conn.execute("TRUNCATE universities, subjects, regional_costs, inflation_factors, degree_levels RESTART IDENTITY CASCADE;")
+
+        for uni in UNIVERSITIES:
+            await conn.execute(
+                "INSERT INTO universities (slug, name, region, roi_undergrad) VALUES ($1, $2, $3, $4)",
+                uni["slug"], uni["name"], uni["region"], uni["roi_undergrad"]
+            )
+
+        for sub in SUBJECTS:
+            await conn.execute(
+                "INSERT INTO subjects (slug, name, roi_ba, roi_ma, roi_phd) VALUES ($1, $2, $3, $4, $5)",
+                sub["slug"], sub["name"], sub["roi_ba"], sub["roi_ma"], sub["roi_phd"]
+            )
+
+        for reg in REGIONS:
+            await conn.execute(
+                "INSERT INTO regional_costs (region, living_cost_per_year, opportunity_wage_per_year) VALUES ($1, $2, $3)",
+                reg["region"], reg["living_cost_per_year"], reg["opportunity_wage_per_year"]
+            )
+
+        for inf in INFLATION:
+            await conn.execute(
+                "INSERT INTO inflation_factors (year, factor) VALUES ($1, $2)",
+                inf["year"], inf["factor"]
+            )
+
+        for dl in DEGREE_LEVELS:
+            await conn.execute(
+                "INSERT INTO degree_levels (level, years, tuition_per_year, books_per_year) VALUES ($1, $2, $3, $4)",
+                dl["level"], dl["years"], dl["tuition_per_year"], dl["books_per_year"]
+            )
+
+        print("Seeding completed.")
+    finally:
+        await conn.close()
+
+if __name__ == "__main__":
+    asyncio.run(seed())
+fastapi==0.115.0
+uvicorn[standard]==0.30.1
+pydantic==2.9.2
+pydantic-settings==2.4.0
+sqlalchemy==2.0.35
+asyncpg==0.29.0
+alembic==1.13.2
+python-dotenv==1.0.1
+httpx==0.27.0
+pytest==8.3.2
+pytest-asyncio==0.24.0
+pytest-env==1.1.3
+# Ediguide ROI Calculator Backend (Module 12)
+
+This module implements the core ROI calculation engine as specified in the Ediguide Website Plan. It provides a FastAPI-based service that computes the financial return on investment for UK university degrees, incorporating subject choice, institutional effects, regional costs, and career progression.
+
+## Features
+
+- **Investment calculation** (tuition, living costs, opportunity cost)
+- **Weighted ROI combination** (70% subject, 30% institution)
+- **Net Present Value (NPV)** with configurable discount rate (default 3.5%)
+- **Payback period** (years to recoup investment)
+- **Career trajectory multipliers** (entry, mid, peak, late)
+- **Inflation adjustment** to a target year (e.g., 2026)
+- **Full API documentation** (auto-generated Swagger UI)
+
+## Tech Stack
+
+- Python 3.11+
+- FastAPI
+- SQLAlchemy 2.0 (async)
+- PostgreSQL + asyncpg
+- Pytest for testing
+
+## Getting Started
+
+1. Clone the repository.
+2. Create a virtual environment and install dependencies:
+   ```bash
+   pip install -r requirements.txt
+python -m scripts.seed_data
+uvicorn app.main:app --reload
+{
+  "university_slug": "warwick",
+  "subject_slug": "politics",
+  "degree_level": "bachelors",
+  "residency_status": "home",
+  "funding": "loans",
+  "include_opportunity_cost": true,
+  "discount_rate": 0.035
+}
+pytest tests/ -v

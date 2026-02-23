@@ -7201,3 +7201,609 @@ function MyApp({ Component, pageProps }: AppProps) {
 }
 
 export default MyApp;
+ediguide/
+├── components/
+│   ├── ConsentBanner.tsx
+│   ├── ConsentModal.tsx
+│   └── ScriptManager.tsx
+├── contexts/
+│   └── ConsentContext.tsx
+├── hooks/
+│   └── useConsent.ts
+├── lib/
+│   └── consent.ts
+├── pages/
+│   ├── _app.tsx                 (integration snippet)
+│   ├── _document.tsx            (integration snippet)
+│   ├── api/
+│   │   └── consent.ts            (optional server endpoint)
+│   └── privacy.tsx               (example privacy page)
+└── styles/
+    └── consent.module.css        (optional – we rely on Tailwind)
+// ediguide/lib/consent.ts
+/**
+ * Consent management utilities.
+ * Handles reading/writing consent cookie, consent types, expiration.
+ */
+
+export type ConsentCategory = 'necessary' | 'analytics' | 'marketing';
+export type ConsentSettings = Record<ConsentCategory, boolean>;
+
+export const CONSENT_COOKIE_NAME = 'ediguide_consent';
+export const CONSENT_EXPIRY_DAYS = 180; // 6 months
+
+// Default: only necessary accepted, others require opt-in
+export const DEFAULT_CONSENT: ConsentSettings = {
+  necessary: true,  // always true, cannot be disabled
+  analytics: false,
+  marketing: false,
+};
+
+/**
+ * Parse consent cookie string into ConsentSettings.
+ * Returns default if cookie missing or invalid.
+ */
+export function parseConsentCookie(cookieValue?: string): ConsentSettings {
+  if (!cookieValue) return { ...DEFAULT_CONSENT };
+  try {
+    const parsed = JSON.parse(cookieValue);
+    // Ensure all keys exist and are boolean
+    const settings: ConsentSettings = { ...DEFAULT_CONSENT };
+    for (const key of Object.keys(settings) as ConsentCategory[]) {
+      if (typeof parsed[key] === 'boolean') {
+        settings[key] = parsed[key];
+      }
+    }
+    // necessary must always be true
+    settings.necessary = true;
+    return settings;
+  } catch {
+    return { ...DEFAULT_CONSENT };
+  }
+}
+
+/**
+ * Stringify consent settings to store in cookie.
+ */
+export function stringifyConsent(settings: ConsentSettings): string {
+  return JSON.stringify(settings);
+}
+
+/**
+ * Set consent cookie in browser.
+ * @param settings - consent settings
+ * @param days - expiry in days
+ */
+export function setConsentCookie(settings: ConsentSettings, days = CONSENT_EXPIRY_DAYS): void {
+  const d = new Date();
+  d.setTime(d.getTime() + days * 24 * 60 * 60 * 1000);
+  const expires = `expires=${d.toUTCString()}`;
+  // Secure, SameSite=Strict, path=/
+  document.cookie = `${CONSENT_COOKIE_NAME}=${stringifyConsent(settings)}; ${expires}; path=/; Secure; SameSite=Strict`;
+}
+
+/**
+ * Get current consent settings from document.cookie.
+ */
+export function getConsentFromCookie(): ConsentSettings {
+  if (typeof document === 'undefined') return { ...DEFAULT_CONSENT }; // SSR
+  const match = document.cookie.match(new RegExp('(^| )' + CONSENT_COOKIE_NAME + '=([^;]+)'));
+  if (match) {
+    return parseConsentCookie(decodeURIComponent(match[2]));
+  }
+  return { ...DEFAULT_CONSENT };
+}
+
+/**
+ * Check if a given consent category is granted.
+ */
+export function isConsentGranted(settings: ConsentSettings, category: ConsentCategory): boolean {
+  if (category === 'necessary') return true; // always allowed
+  return settings[category] === true;
+}
+
+/**
+ * Helper to load third-party scripts only after consent.
+ * @param src - script URL
+ * @param category - required consent category
+ * @param attrs - additional script attributes (e.g., { async: true, 'data-consent': 'analytics' })
+ * @returns Promise that resolves when script loads or rejects on error
+ */
+export function loadScript(src: string, category: ConsentCategory, attrs?: Record<string, string | boolean>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // Check if already loaded
+    if (document.querySelector(`script[src="${src}"]`)) {
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.setAttribute('data-consent', category);
+    if (attrs) {
+      Object.entries(attrs).forEach(([key, value]) => {
+        if (typeof value === 'boolean') {
+          if (value) script.setAttribute(key, '');
+        } else {
+          script.setAttribute(key, value);
+        }
+      });
+    }
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+/**
+ * Remove all scripts of a given consent category.
+ * Useful when user revokes consent.
+ */
+export function removeScriptsByCategory(category: ConsentCategory): void {
+  const scripts = document.querySelectorAll(`script[data-consent="${category}"]`);
+  scripts.forEach((script) => script.remove());
+}
+
+/**
+ * Check if user has already made a consent choice.
+ */
+export function hasConsentChoice(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.cookie.includes(CONSENT_COOKIE_NAME);
+}
+// ediguide/contexts/ConsentContext.tsx
+import React, { createContext, useEffect, useState, useCallback, ReactNode } from 'react';
+import {
+  ConsentSettings,
+  ConsentCategory,
+  DEFAULT_CONSENT,
+  getConsentFromCookie,
+  setConsentCookie,
+  isConsentGranted,
+  hasConsentChoice,
+} from '@/lib/consent';
+
+interface ConsentContextType {
+  consent: ConsentSettings;
+  hasChoice: boolean;
+  acceptAll: () => void;
+  rejectAll: () => void;
+  updateConsent: (newSettings: Partial<ConsentSettings>) => void;
+  isGranted: (category: ConsentCategory) => boolean;
+  showBanner: boolean;
+  setShowBanner: (show: boolean) => void;
+  openPreferences: () => void;
+  closePreferences: () => void;
+  preferencesOpen: boolean;
+}
+
+export const ConsentContext = createContext<ConsentContextType | undefined>(undefined);
+
+interface ConsentProviderProps {
+  children: ReactNode;
+}
+
+export const ConsentProvider = ({ children }: ConsentProviderProps) => {
+  const [consent, setConsent] = useState<ConsentSettings>(DEFAULT_CONSENT);
+  const [hasChoice, setHasChoice] = useState<boolean>(false);
+  const [preferencesOpen, setPreferencesOpen] = useState<boolean>(false);
+  const [showBanner, setShowBanner] = useState<boolean>(false);
+
+  // Load consent from cookie on mount
+  useEffect(() => {
+    const stored = getConsentFromCookie();
+    setConsent(stored);
+    const madeChoice = hasConsentChoice();
+    setHasChoice(madeChoice);
+    // Show banner only if no choice yet
+    setShowBanner(!madeChoice);
+  }, []);
+
+  const saveConsent = useCallback((newConsent: ConsentSettings) => {
+    setConsentCookie(newConsent);
+    setConsent(newConsent);
+    setHasChoice(true);
+    setShowBanner(false);
+    // Optionally reload or update scripts – handled by ScriptManager via effect
+  }, []);
+
+  const acceptAll = useCallback(() => {
+    const allAccepted: ConsentSettings = {
+      necessary: true,
+      analytics: true,
+      marketing: true,
+    };
+    saveConsent(allAccepted);
+  }, [saveConsent]);
+
+  const rejectAll = useCallback(() => {
+    saveConsent(DEFAULT_CONSENT);
+  }, [saveConsent]);
+
+  const updateConsent = useCallback((newSettings: Partial<ConsentSettings>) => {
+    const updated = { ...consent, ...newSettings, necessary: true };
+    saveConsent(updated);
+  }, [consent, saveConsent]);
+
+  const isGranted = useCallback((category: ConsentCategory) => {
+    return isConsentGranted(consent, category);
+  }, [consent]);
+
+  const openPreferences = useCallback(() => setPreferencesOpen(true), []);
+  const closePreferences = useCallback(() => setPreferencesOpen(false), []);
+
+  return (
+    <ConsentContext.Provider
+      value={{
+        consent,
+        hasChoice,
+        acceptAll,
+        rejectAll,
+        updateConsent,
+        isGranted,
+        showBanner,
+        setShowBanner,
+        openPreferences,
+        closePreferences,
+        preferencesOpen,
+      }}
+    >
+      {children}
+    </ConsentContext.Provider>
+  );
+};
+// ediguide/hooks/useConsent.ts
+import { useContext } from 'react';
+import { ConsentContext } from '@/contexts/ConsentContext';
+
+export const useConsent = () => {
+  const context = useContext(ConsentContext);
+  if (context === undefined) {
+    throw new Error('useConsent must be used within a ConsentProvider');
+  }
+  return context;
+};
+// ediguide/components/ConsentBanner.tsx
+import React from 'react';
+import { useConsent } from '@/hooks/useConsent';
+
+const ConsentBanner: React.FC = () => {
+  const { showBanner, acceptAll, rejectAll, openPreferences } = useConsent();
+
+  if (!showBanner) return null;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-50 p-4 md:p-6 bg-white/95 backdrop-blur-sm border-t border-soft-grey shadow-lg">
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="flex-1 text-charcoal">
+          <p className="text-sm md:text-base">
+            <span className="font-semibold text-deep-navy">🍪 We value your privacy</span>
+            <br />
+            We use cookies to enhance your experience, analyse site traffic, and deliver
+            personalised content. You can choose which categories to allow.
+            <button
+              onClick={openPreferences}
+              className="ml-1 text-turquoise hover:underline focus:outline-none focus:ring-2 focus:ring-turquoise rounded"
+            >
+              Manage preferences
+            </button>
+            . See our{' '}
+            <a href="/privacy" className="text-turquoise hover:underline">
+              Privacy Policy
+            </a>
+            .
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+          <button
+            onClick={rejectAll}
+            className="px-6 py-2 border-2 border-midnight-teal text-midnight-teal font-medium rounded-full hover:bg-midnight-teal/5 transition-colors focus:outline-none focus:ring-2 focus:ring-midnight-teal"
+          >
+            Reject all
+          </button>
+          <button
+            onClick={acceptAll}
+            className="px-6 py-2 bg-turquoise text-white font-medium rounded-full hover:bg-turquoise/90 transition-colors focus:outline-none focus:ring-2 focus:ring-turquoise"
+          >
+            Accept all
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ConsentBanner;
+// ediguide/components/ConsentModal.tsx
+import React, { Fragment } from 'react';
+import { Dialog, Transition } from '@headlessui/react';
+import { XMarkIcon } from '@heroicons/react/24/outline';
+import { useConsent } from '@/hooks/useConsent';
+import { ConsentCategory } from '@/lib/consent';
+
+const ConsentModal: React.FC = () => {
+  const { preferencesOpen, closePreferences, consent, updateConsent } = useConsent();
+
+  const handleToggle = (category: ConsentCategory) => {
+    if (category === 'necessary') return; // cannot toggle necessary
+    updateConsent({ [category]: !consent[category] });
+  };
+
+  return (
+    <Transition appear show={preferencesOpen} as={Fragment}>
+      <Dialog as="div" className="relative z-50" onClose={closePreferences}>
+        <Transition.Child
+          as={Fragment}
+          enter="ease-out duration-300"
+          enterFrom="opacity-0"
+          enterTo="opacity-100"
+          leave="ease-in duration-200"
+          leaveFrom="opacity-100"
+          leaveTo="opacity-0"
+        >
+          <div className="fixed inset-0 bg-black/25 backdrop-blur-sm" />
+        </Transition.Child>
+
+        <div className="fixed inset-0 overflow-y-auto">
+          <div className="flex min-h-full items-center justify-center p-4">
+            <Transition.Child
+              as={Fragment}
+              enter="ease-out duration-300"
+              enterFrom="opacity-0 scale-95"
+              enterTo="opacity-100 scale-100"
+              leave="ease-in duration-200"
+              leaveFrom="opacity-100 scale-100"
+              leaveTo="opacity-0 scale-95"
+            >
+              <Dialog.Panel className="w-full max-w-2xl transform overflow-hidden rounded-2xl bg-white p-6 shadow-xl transition-all">
+                <div className="flex items-center justify-between mb-4">
+                  <Dialog.Title as="h3" className="text-xl font-heading text-deep-navy">
+                    Privacy preferences
+                  </Dialog.Title>
+                  <button
+                    onClick={closePreferences}
+                    className="rounded-full p-1 text-slate hover:bg-soft-grey transition-colors"
+                  >
+                    <XMarkIcon className="h-6 w-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  {/* Necessary cookies – always on */}
+                  <div className="flex items-start gap-3 p-3 bg-mint/10 rounded-lg">
+                    <div className="flex h-6 items-center">
+                      <input
+                        type="checkbox"
+                        checked
+                        disabled
+                        className="h-5 w-5 rounded border-soft-grey bg-mint text-turquoise focus:ring-turquoise"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="font-medium text-deep-navy">Necessary cookies</label>
+                      <p className="text-sm text-slate">
+                        Required for the website to function properly. Cannot be disabled.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Analytics */}
+                  <div className="flex items-start gap-3 p-3 hover:bg-soft-grey/30 rounded-lg transition">
+                    <div className="flex h-6 items-center">
+                      <input
+                        type="checkbox"
+                        checked={consent.analytics}
+                        onChange={() => handleToggle('analytics')}
+                        className="h-5 w-5 rounded border-soft-grey text-turquoise focus:ring-turquoise"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="font-medium text-deep-navy">Analytics cookies</label>
+                      <p className="text-sm text-slate">
+                        Help us improve our website by collecting anonymous usage data.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Marketing */}
+                  <div className="flex items-start gap-3 p-3 hover:bg-soft-grey/30 rounded-lg transition">
+                    <div className="flex h-6 items-center">
+                      <input
+                        type="checkbox"
+                        checked={consent.marketing}
+                        onChange={() => handleToggle('marketing')}
+                        className="h-5 w-5 rounded border-soft-grey text-turquoise focus:ring-turquoise"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="font-medium text-deep-navy">Marketing cookies</label>
+                      <p className="text-sm text-slate">
+                        Used to deliver personalised advertisements and track affiliate conversions.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={closePreferences}
+                    className="px-6 py-2 border-2 border-midnight-teal text-midnight-teal font-medium rounded-full hover:bg-midnight-teal/5 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={closePreferences}
+                    className="px-6 py-2 bg-turquoise text-white font-medium rounded-full hover:bg-turquoise/90 transition-colors"
+                  >
+                    Save preferences
+                  </button>
+                </div>
+                <p className="text-xs text-slate mt-4">
+                  You can change your preferences at any time by clicking “Cookie Settings” in the footer.
+                </p>
+              </Dialog.Panel>
+            </Transition.Child>
+          </div>
+        </div>
+      </Dialog>
+    </Transition>
+  );
+};
+
+export default ConsentModal;
+// ediguide/components/ScriptManager.tsx
+import { useEffect } from 'react';
+import { useConsent } from '@/hooks/useConsent';
+import { loadScript, removeScriptsByCategory } from '@/lib/consent';
+
+/**
+ * This component loads third-party scripts based on current consent.
+ * It should be placed once in the app, e.g., in _app.tsx.
+ */
+const ScriptManager: React.FC = () => {
+  const { consent, isGranted } = useConsent();
+
+  // Load/unload scripts when consent changes
+  useEffect(() => {
+    // Helper to manage a script category
+    const manageScripts = async () => {
+      // Example: Google Analytics (analytics)
+      if (isGranted('analytics')) {
+        try {
+          await loadScript('https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX', 'analytics', { async: true });
+          // Initialize gtag (if not already)
+          if (!window.gtag) {
+            window.dataLayer = window.dataLayer || [];
+            window.gtag = function(){ window.dataLayer.push(arguments); };
+            gtag('js', new Date());
+            gtag('config', 'G-XXXXXXXXXX', { anonymize_ip: true });
+          }
+        } catch (error) {
+          console.error('Failed to load analytics:', error);
+        }
+      } else {
+        // Remove analytics scripts if consent revoked
+        removeScriptsByCategory('analytics');
+        // Also clean up any global variables if needed
+        if (window.gtag) {
+          // Optionally disable tracking
+          window['ga-disable-G-XXXXXXXXXX'] = true;
+        }
+      }
+
+      // Example: Affiliate tracking (marketing)
+      if (isGranted('marketing')) {
+        try {
+          // Load Awin (or other affiliate network) script
+          await loadScript('https://www.awin1.com/awin.js', 'marketing', { async: true });
+          // Initialize if needed
+        } catch (error) {
+          console.error('Failed to load affiliate script:', error);
+        }
+      } else {
+        removeScriptsByCategory('marketing');
+        // Optionally remove affiliate cookies / disable
+      }
+    };
+
+    manageScripts();
+  }, [consent, isGranted]); // re-run when consent changes
+
+  return null; // This component does not render anything
+};
+
+export default ScriptManager;
+
+// Extend Window interface for gtag
+declare global {
+  interface Window {
+    dataLayer: any[];
+    gtag: (...args: any[]) => void;
+    'ga-disable-G-XXXXXXXXXX'?: boolean;
+  }
+}
+// ediguide/pages/_app.tsx
+import type { AppProps } from 'next/app';
+import { ConsentProvider } from '@/contexts/ConsentContext';
+import ConsentBanner from '@/components/ConsentBanner';
+import ConsentModal from '@/components/ConsentModal';
+import ScriptManager from '@/components/ScriptManager';
+import '@/styles/globals.css'; // Tailwind
+
+export default function MyApp({ Component, pageProps }: AppProps) {
+  return (
+    <ConsentProvider>
+      <Component {...pageProps} />
+      <ConsentBanner />
+      <ConsentModal />
+      <ScriptManager />
+    </ConsentProvider>
+  );
+}
+// ediguide/pages/api/consent.ts
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { parseConsentCookie, CONSENT_COOKIE_NAME, CONSENT_EXPIRY_DAYS } from '@/lib/consent';
+
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const { consent } = req.body;
+  if (!consent || typeof consent !== 'object') {
+    return res.status(400).json({ error: 'Invalid consent data' });
+  }
+
+  const settings = parseConsentCookie(JSON.stringify(consent));
+  // You could store in database for audit, but we'll just set cookie
+
+  // Set cookie via response header
+  const cookieValue = JSON.stringify(settings);
+  const expires = new Date();
+  expires.setTime(expires.getTime() + CONSENT_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+  res.setHeader(
+    'Set-Cookie',
+    `${CONSENT_COOKIE_NAME}=${encodeURIComponent(cookieValue)}; expires=${expires.toUTCString()}; path=/; Secure; SameSite=Strict`
+  );
+
+  res.status(200).json({ status: 'ok', consent: settings });
+}
+// ediguide/pages/privacy.tsx
+import React from 'react';
+import Link from 'next/link';
+import { useConsent } from '@/hooks/useConsent';
+
+export default function PrivacyPage() {
+  const { openPreferences } = useConsent();
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-12">
+      <h1 className="font-heading text-4xl text-deep-navy mb-6">Privacy Policy</h1>
+      <p className="text-charcoal mb-4">Last updated: March 2025</p>
+      <section className="prose prose-slate">
+        <h2>Your privacy matters</h2>
+        <p>...</p>
+        <h3>Cookies and similar technologies</h3>
+        <p>We use cookies to ... You can manage your preferences at any time:</p>
+        <button
+          onClick={openPreferences}
+          className="mt-2 px-4 py-2 bg-turquoise text-white rounded-full"
+        >
+          Manage cookie preferences
+        </button>
+        {/* ... rest of policy */}
+      </section>
+    </div>
+  );
+}
+// Somewhere in footer component
+import { useConsent } from '@/hooks/useConsent';
+
+const Footer = () => {
+  const { openPreferences } = useConsent();
+  return (
+    <footer>
+      <button onClick={openPreferences} className="text-sm text-slate hover:text-turquoise">
+        Cookie Settings
+      </button>
+    </footer>
+  );
+};

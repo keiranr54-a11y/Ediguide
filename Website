@@ -3933,3 +3933,1327 @@ This module contains the database schema, models, migrations, and seed data for 
 
 ## Tests
 Run `pytest backend/tests/ -v`
+ediguide-backend/
+├── .env.example
+├── .gitignore
+├── Makefile
+├── README.md
+├── requirements.txt
+├── docker-compose.yml
+├── Dockerfile
+├── alembic.ini
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py
+│   │   ├── exceptions.py
+│   │   ├── logging.py
+│   │   └── security.py
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── repository.py
+│   │   ├── session.py
+│   │   └── migrations/
+│   │       ├── env.py
+│   │       ├── script.py.mako
+│   │       └── versions/
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── university.py
+│   │   ├── subject.py
+│   │   └── regional_cost.py
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   ├── health.py
+│   │   ├── university.py
+│   │   ├── subject.py
+│   │   └── regional_cost.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── deps.py
+│   │   └── v1/
+│   │       ├── __init__.py
+│   │       ├── router.py
+│   │       └── endpoints/
+│   │           ├── __init__.py
+│   │           ├── health.py
+│   │           └── universities.py
+│   ├── services/
+│   │   └── __init__.py
+│   └── utils/
+│       ├── __init__.py
+│       ├── cache.py
+│       └── context.py
+└── tests/
+    ├── __init__.py
+    ├── conftest.py
+    └── test_health.py
+# Environment: development, staging, production
+ENVIRONMENT=development
+DEBUG=True
+SECRET_KEY=change_this_in_production
+
+# Database
+DATABASE_URL=postgresql+asyncpg://user:pass@db:5432/ediguide
+DATABASE_POOL_SIZE=20
+DATABASE_MAX_OVERFLOW=10
+DATABASE_POOL_TIMEOUT=30
+DATABASE_ECHO=False
+
+# Redis
+REDIS_URL=redis://redis:6379/0
+REDIS_MAX_CONNECTIONS=50
+
+# CORS
+BACKEND_CORS_ORIGINS=["http://localhost:3000","http://localhost:8000"]
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+
+# External APIs (placeholders)
+KEYSTONE_API_KEY=
+AWIN_API_KEY=
+fastapi==0.115.0
+uvicorn[standard]==0.30.1
+python-dotenv==1.0.0
+pydantic-settings==2.3.0
+sqlalchemy==2.0.32
+asyncpg==0.29.0
+alembic==1.13.1
+redis==5.0.7
+python-json-logger==2.0.7
+httpx==0.27.0
+tenacity==8.5.0
+psycopg2-binary==2.9.9  # for Alembic offline migrations
+# ediguide Backend – FastAPI Foundation
+
+This is the core backend for the ediguide platform. It provides:
+
+- Async FastAPI application
+- PostgreSQL with SQLAlchemy 2.0 and connection pooling
+- Redis for caching
+- Structured logging (JSON)
+- Health checks and monitoring endpoints
+- Modular, production‑ready structure
+
+## Quick Start
+
+1. Clone the repository.
+2. Copy `.env.example` to `.env` and adjust values.
+3. Run with Docker Compose:
+   ```bash
+   docker-compose up -d
+make migrate
+
+---
+
+## `Makefile`
+
+```makefile
+.PHONY: help install run shell migrate makemigrations test format
+
+help:
+	@echo "Available commands:"
+	@echo "  install       Install dependencies"
+	@echo "  run           Start the development server"
+	@echo "  shell         Open a Python shell"
+	@echo "  migrate       Apply Alembic migrations"
+	@echo "  makemigrations Create new migration"
+	@echo "  test          Run tests"
+	@echo "  format        Format code with black and isort"
+
+install:
+	pip install -r requirements.txt
+
+run:
+	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+shell:
+	python -c "from app.main import app; from app.core.config import settings; import asyncio; print('Settings loaded, app ready.')"
+
+migrate:
+	alembic upgrade head
+
+makemigrations:
+	alembic revision --autogenerate -m "$(message)"
+
+test:
+	pytest -v --cov=app tests/
+
+format:
+	black app tests
+	isort app tests
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: ediguide_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: ediguide
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ediguide_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: ediguide_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data:
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+[alembic]
+script_location = app/db/migrations
+prepend_sys_path = .
+version_path_separator = os
+sqlalchemy.url = postgresql+asyncpg://user:pass@localhost:5432/ediguide
+
+[post_write_hooks]
+hooks = black
+black.type = console_scripts
+black.entrypoint = black
+black.options = -l 88
+"""ediguide backend application."""
+"""
+Main FastAPI application entry point.
+"""
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.api.v1.router import api_router
+from app.core.config import settings
+from app.core.exceptions import setup_exception_handlers
+from app.core.logging import RequestIDMiddleware, setup_logging
+from app.db.session import close_db, init_db
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator:
+    """
+    Lifespan context manager for startup/shutdown events.
+    """
+    # Startup
+    setup_logging()
+    await init_db()
+    yield
+    # Shutdown
+    await close_db()
+
+
+# Create FastAPI app
+app = FastAPI(
+    title="ediguide API",
+    version="0.1.0",
+    description="University ROI Intelligence Platform",
+    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
+    lifespan=lifespan,
+)
+
+# CORS
+if settings.BACKEND_CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+# Request ID middleware
+app.add_middleware(RequestIDMiddleware)  # type: ignore
+
+# Exception handlers
+setup_exception_handlers(app)
+
+# Include API router
+app.include_router(api_router, prefix="/api/v1")
+
+
+@app.get("/", tags=["Root"])
+async def root() -> dict:
+    """Root endpoint returning API information."""
+    return {
+        "service": "ediguide API",
+        "version": "0.1.0",
+        "docs": "/docs",
+        "health": "/api/v1/health",
+    }
+"""
+Pydantic settings management with environment variable support.
+"""
+from typing import List, Optional
+from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    # Environment
+    ENVIRONMENT: str = Field("development", pattern="^(development|staging|production)$")
+    DEBUG: bool = False
+    SECRET_KEY: str = Field(..., min_length=32)
+
+    # Database
+    DATABASE_URL: PostgresDsn
+    DATABASE_POOL_SIZE: int = 20
+    DATABASE_MAX_OVERFLOW: int = 10
+    DATABASE_POOL_TIMEOUT: int = 30
+    DATABASE_ECHO: bool = False
+
+    # Redis
+    REDIS_URL: RedisDsn
+    REDIS_MAX_CONNECTIONS: int = 50
+
+    # CORS
+    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: str | List[str]) -> List[str] | str:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",")]
+        elif isinstance(v, (list, str)):
+            return v
+        raise ValueError(v)
+
+    # Logging
+    LOG_LEVEL: str = Field("INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    LOG_FORMAT: str = Field("json", pattern="^(json|console)$")
+
+
+settings = Settings()  # type: ignore
+"""
+Custom exceptions and global exception handlers.
+"""
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+class EdiguideException(Exception):
+    """Base exception for ediguide application."""
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        self.message = message
+        self.status_code = status_code
+        self.details = details or {}
+        super().__init__(message)
+
+
+class DatabaseError(EdiguideException):
+    """Raised when a database operation fails."""
+
+    def __init__(self, message: str = "Database error", details: Optional[Dict] = None):
+        super().__init__(message, status.HTTP_503_SERVICE_UNAVAILABLE, details)
+
+
+class NotFoundError(EdiguideException):
+    """Raised when a resource is not found."""
+
+    def __init__(self, message: str = "Resource not found", details: Optional[Dict] = None):
+        super().__init__(message, status.HTTP_404_NOT_FOUND, details)
+
+
+class BadRequestError(EdiguideException):
+    """Raised when the request is malformed."""
+
+    def __init__(self, message: str = "Bad request", details: Optional[Dict] = None):
+        super().__init__(message, status.HTTP_400_BAD_REQUEST, details)
+
+
+def setup_exception_handlers(app: FastAPI) -> None:
+    """Register global exception handlers."""
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": exc.errors(), "body": exc.body},
+        )
+
+    @app.exception_handler(EdiguideException)
+    async def ediguide_exception_handler(request: Request, exc: EdiguideException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.message, "details": exc.details},
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request: Request, exc: Exception):
+        # Log the full exception in production
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "An internal server error occurred."},
+        )
+"""
+Structured logging with request ID correlation.
+"""
+import logging
+import uuid
+from typing import Callable
+
+from pythonjsonlogger import jsonlogger
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
+
+from app.utils.context import request_id_ctx
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Middleware that injects a request ID into the context for logging."""
+
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+
+    async def dispatch(self, request, call_next):
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request_id_ctx.set(request_id)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+class RequestIDLogFilter(logging.Filter):
+    """Log filter that adds request_id to log records."""
+
+    def filter(self, record):
+        record.request_id = request_id_ctx.get() or "-"
+        return True
+
+
+def setup_logging() -> None:
+    """Configure structured JSON logging."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # Remove existing handlers
+    logger.handlers.clear()
+
+    # Console handler
+    handler = logging.StreamHandler()
+
+    # JSON formatter
+    formatter = jsonlogger.JsonFormatter(
+        fmt="%(asctime)s %(name)s %(levelname)s %(message)s %(request_id)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    handler.setFormatter(formatter)
+
+    # Add request ID filter
+    handler.addFilter(RequestIDLogFilter())
+
+    logger.addHandler(handler)
+
+    # Set third-party log levels
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+"""
+Security utilities (JWT, password hashing) – placeholder for future use.
+"""
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plain password against a hashed password."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    """Hash a password."""
+    return pwd_context.hash(password)
+"""
+SQLAlchemy base class and metadata.
+"""
+from sqlalchemy.ext.declarative import declarative_base
+
+Base = declarative_base()
+metadata = Base.metadata
+"""
+Generic repository pattern for SQLAlchemy async CRUD operations.
+"""
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, Union
+
+from pydantic import BaseModel
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.base import Base
+
+ModelType = TypeVar("ModelType", bound=Base)
+CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
+UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
+
+
+class RepositoryBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
+    """Base class for data access objects."""
+
+    def __init__(self, model: Type[ModelType], db_session: AsyncSession):
+        self.model = model
+        self.db = db_session
+
+    async def get(self, id: Any) -> Optional[ModelType]:
+        """Get a single record by ID."""
+        result = await self.db.execute(select(self.model).where(self.model.id == id))
+        return result.scalar_one_or_none()
+
+    async def get_multi(
+        self, *, skip: int = 0, limit: int = 100, **filters
+    ) -> List[ModelType]:
+        """Get multiple records with pagination and optional filters."""
+        query = select(self.model)
+        for attr, value in filters.items():
+            if hasattr(self.model, attr):
+                query = query.where(getattr(self.model, attr) == value)
+        query = query.offset(skip).limit(limit)
+        result = await self.db.execute(query)
+        return result.scalars().all()
+
+    async def create(self, *, obj_in: CreateSchemaType) -> ModelType:
+        """Create a new record."""
+        obj_in_data = obj_in.model_dump()
+        db_obj = self.model(**obj_in_data)
+        self.db.add(db_obj)
+        await self.db.flush()
+        await self.db.refresh(db_obj)
+        return db_obj
+
+    async def update(
+        self, *, db_obj: ModelType, obj_in: Union[UpdateSchemaType, Dict[str, Any]]
+    ) -> ModelType:
+        """Update an existing record."""
+        if isinstance(obj_in, dict):
+            update_data = obj_in
+        else:
+            update_data = obj_in.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+        self.db.add(db_obj)
+        await self.db.flush()
+        await self.db.refresh(db_obj)
+        return db_obj
+
+    async def delete(self, *, id: int) -> Optional[ModelType]:
+        """Delete a record by ID."""
+        obj = await self.get(id=id)
+        if obj:
+            await self.db.delete(obj)
+            await self.db.flush()
+        return obj
+
+    async def count(self, **filters) -> int:
+        """Count records with optional filters."""
+        query = select(func.count()).select_from(self.model)
+        for attr, value in filters.items():
+            if hasattr(self.model, attr):
+                query = query.where(getattr(self.model, attr) == value)
+        result = await self.db.execute(query)
+        return result.scalar()
+"""
+Database session management with connection pooling.
+"""
+from typing import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from app.core.config import settings
+
+# Create async engine with connection pooling
+engine = create_async_engine(
+    str(settings.DATABASE_URL),
+    pool_size=settings.DATABASE_POOL_SIZE,
+    max_overflow=settings.DATABASE_MAX_OVERFLOW,
+    pool_timeout=settings.DATABASE_POOL_TIMEOUT,
+    pool_pre_ping=True,  # verify connections before using
+    echo=settings.DATABASE_ECHO,
+    future=True,
+)
+
+# Session factory
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Dependency that provides a database session.
+    Ensures the session is closed after the request.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+async def init_db() -> None:
+    """Initialize database (create tables if not exist)."""
+    # In production, use Alembic migrations; this is for development only.
+    if settings.ENVIRONMENT == "development":
+        from app.db.base import Base
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+
+async def close_db() -> None:
+    """Close database connections."""
+    await engine.dispose()
+"""
+Alembic environment configuration.
+"""
+import asyncio
+from logging.config import fileConfig
+
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
+
+from app.core.config import settings
+from app.db.base import Base
+
+# this is the Alembic Config object
+config = context.config
+
+# Interpret the config file for Python logging.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Set target metadata
+target_metadata = Base.metadata
+
+# Override sqlalchemy.url with settings
+config.set_main_option("sqlalchemy.url", str(settings.DATABASE_URL))
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode."""
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    """Run migrations in 'online' mode asynchronously."""
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode."""
+    asyncio.run(run_async_migrations())
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    ${downgrades if downgrades else "pass"}
+from app.models.university import University
+from app.models.subject import Subject
+from app.models.regional_cost import RegionalCost
+
+__all__ = ["University", "Subject", "RegionalCost"]
+"""
+University database model.
+"""
+from sqlalchemy import Column, Integer, String, Float, JSON
+from app.db.base import Base
+
+
+class University(Base):
+    __tablename__ = "universities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False, unique=True, index=True)
+    slug = Column(String(255), nullable=False, unique=True, index=True)
+    region = Column(String(100), nullable=False)
+    rank = Column(Integer)
+    composite_score = Column(Float)
+    roi_percent = Column(Float)
+    lifetime_gain_2026 = Column(Integer)
+    investment_2024 = Column(Integer)
+    data = Column(JSON)  # additional metadata (images, descriptions, etc.)
+
+    def __repr__(self):
+        return f"<University {self.name}>"
+"""
+Subject database model.
+"""
+from sqlalchemy import Column, Integer, String, Float, JSON
+from app.db.base import Base
+
+
+class Subject(Base):
+    __tablename__ = "subjects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False, unique=True, index=True)
+    slug = Column(String(255), nullable=False, unique=True, index=True)
+    category = Column(String(100))
+    roi_undergrad = Column(Float)
+    roi_masters = Column(Float)
+    roi_phd = Column(Float)
+    data = Column(JSON)
+
+    def __repr__(self):
+        return f"<Subject {self.name}>"
+"""
+Regional cost of living and opportunity wage model.
+"""
+from sqlalchemy import Column, Integer, String, Float
+from app.db.base import Base
+
+
+class RegionalCost(Base):
+    __tablename__ = "regional_costs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    region = Column(String(100), nullable=False, unique=True, index=True)
+    living_cost_per_year = Column(Integer, nullable=False)
+    opportunity_wage_per_year = Column(Integer, nullable=False)
+    tuition_multiplier = Column(Float, default=1.0)
+
+    def __repr__(self):
+        return f"<RegionalCost {self.region}>"
+from app.schemas.health import HealthCheck
+from app.schemas.university import University, UniversityCreate, UniversityUpdate
+from app.schemas.subject import Subject, SubjectCreate, SubjectUpdate
+from app.schemas.regional_cost import RegionalCost, RegionalCostCreate, RegionalCostUpdate
+
+__all__ = [
+    "HealthCheck",
+    "University", "UniversityCreate", "UniversityUpdate",
+    "Subject", "SubjectCreate", "SubjectUpdate",
+    "RegionalCost", "RegionalCostCreate", "RegionalCostUpdate",
+]
+"""
+Health check response schemas.
+"""
+from pydantic import BaseModel
+
+
+class HealthCheck(BaseModel):
+    status: str
+    version: str
+    database: str
+    redis: str
+"""
+University Pydantic schemas.
+"""
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, Any, Dict
+
+
+class UniversityBase(BaseModel):
+    name: str
+    slug: str
+    region: str
+    rank: Optional[int] = None
+    composite_score: Optional[float] = None
+    roi_percent: Optional[float] = None
+    lifetime_gain_2026: Optional[int] = None
+    investment_2024: Optional[int] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+class UniversityCreate(UniversityBase):
+    pass
+
+
+class UniversityUpdate(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    region: Optional[str] = None
+    rank: Optional[int] = None
+    composite_score: Optional[float] = None
+    roi_percent: Optional[float] = None
+    lifetime_gain_2026: Optional[int] = None
+    investment_2024: Optional[int] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+class University(UniversityBase):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+"""
+Subject Pydantic schemas.
+"""
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, Any, Dict
+
+
+class SubjectBase(BaseModel):
+    name: str
+    slug: str
+    category: Optional[str] = None
+    roi_undergrad: Optional[float] = None
+    roi_masters: Optional[float] = None
+    roi_phd: Optional[float] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+class SubjectCreate(SubjectBase):
+    pass
+
+
+class SubjectUpdate(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    category: Optional[str] = None
+    roi_undergrad: Optional[float] = None
+    roi_masters: Optional[float] = None
+    roi_phd: Optional[float] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+class Subject(SubjectBase):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+"""
+RegionalCost Pydantic schemas.
+"""
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
+
+
+class RegionalCostBase(BaseModel):
+    region: str
+    living_cost_per_year: int
+    opportunity_wage_per_year: int
+    tuition_multiplier: float = 1.0
+
+
+class RegionalCostCreate(RegionalCostBase):
+    pass
+
+
+class RegionalCostUpdate(BaseModel):
+    region: Optional[str] = None
+    living_cost_per_year: Optional[int] = None
+    opportunity_wage_per_year: Optional[int] = None
+    tuition_multiplier: Optional[float] = None
+
+
+class RegionalCost(RegionalCostBase):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+"""
+API dependencies.
+"""
+from typing import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_session
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    FastAPI dependency that provides a database session.
+    """
+    async for session in get_session():
+        yield session
+"""
+API v1 router registration.
+"""
+from fastapi import APIRouter
+
+from app.api.v1.endpoints import health, universities
+
+api_router = APIRouter()
+
+api_router.include_router(health.router, prefix="/health", tags=["Health"])
+api_router.include_router(universities.router, prefix="/universities", tags=["Universities"])
+"""
+Health check endpoints.
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+import redis.asyncio as redis
+
+from app.api import deps
+from app.core.config import settings
+from app.schemas.health import HealthCheck
+
+router = APIRouter()
+
+
+@router.get("", response_model=HealthCheck)
+async def health_check(db: AsyncSession = Depends(deps.get_db)) -> HealthCheck:
+    """
+    Comprehensive health check verifying database and Redis connectivity.
+    """
+    status = "ok"
+    db_status = "ok"
+    redis_status = "ok"
+
+    # Check database
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+        status = "degraded"
+
+    # Check Redis
+    try:
+        r = redis.from_url(str(settings.REDIS_URL), socket_connect_timeout=2)
+        await r.ping()
+        await r.close()
+    except Exception as e:
+        redis_status = f"error: {str(e)}"
+        status = "degraded"
+
+    return HealthCheck(
+        status=status,
+        version="0.1.0",
+        database=db_status,
+        redis=redis_status,
+    )
+
+
+@router.get("/ready")
+async def readiness_check() -> dict:
+    """Kubernetes readiness probe."""
+    return {"status": "ready"}
+
+
+@router.get("/live")
+async def liveness_check() -> dict:
+    """Kubernetes liveness probe."""
+    return {"status": "alive"}
+"""
+University CRUD endpoints.
+"""
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api import deps
+from app.db.repository import RepositoryBase
+from app.models.university import University as UniversityModel
+from app.schemas.university import University, UniversityCreate, UniversityUpdate
+
+router = APIRouter()
+
+
+@router.get("", response_model=List[University])
+async def list_universities(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(deps.get_db),
+) -> List[University]:
+    """Retrieve a paginated list of universities."""
+    repo = RepositoryBase[UniversityModel, UniversityCreate, UniversityUpdate](
+        UniversityModel, db
+    )
+    universities = await repo.get_multi(skip=skip, limit=limit)
+    return universities
+
+
+@router.post("", response_model=University, status_code=201)
+async def create_university(
+    university_in: UniversityCreate,
+    db: AsyncSession = Depends(deps.get_db),
+) -> University:
+    """Create a new university."""
+    repo = RepositoryBase[UniversityModel, UniversityCreate, UniversityUpdate](
+        UniversityModel, db
+    )
+    # Check if slug already exists
+    existing = await repo.get_multi(slug=university_in.slug, limit=1)
+    if existing:
+        raise HTTPException(status_code=400, detail="University with this slug already exists")
+    university = await repo.create(obj_in=university_in)
+    return university
+
+
+@router.get("/{university_id}", response_model=University)
+async def get_university(
+    university_id: int,
+    db: AsyncSession = Depends(deps.get_db),
+) -> University:
+    """Get a specific university by ID."""
+    repo = RepositoryBase[UniversityModel, UniversityCreate, UniversityUpdate](
+        UniversityModel, db
+    )
+    university = await repo.get(id=university_id)
+    if not university:
+        raise HTTPException(status_code=404, detail="University not found")
+    return university
+
+
+@router.patch("/{university_id}", response_model=University)
+async def update_university(
+    university_id: int,
+    university_in: UniversityUpdate,
+    db: AsyncSession = Depends(deps.get_db),
+) -> University:
+    """Update a university."""
+    repo = RepositoryBase[UniversityModel, UniversityCreate, UniversityUpdate](
+        UniversityModel, db
+    )
+    university = await repo.get(id=university_id)
+    if not university:
+        raise HTTPException(status_code=404, detail="University not found")
+    updated = await repo.update(db_obj=university, obj_in=university_in)
+    return updated
+
+
+@router.delete("/{university_id}", status_code=204)
+async def delete_university(
+    university_id: int,
+    db: AsyncSession = Depends(deps.get_db),
+) -> None:
+    """Delete a university."""
+    repo = RepositoryBase[UniversityModel, UniversityCreate, UniversityUpdate](
+        UniversityModel, db
+    )
+    deleted = await repo.delete(id=university_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="University not found")
+"""
+Redis cache utilities.
+"""
+import json
+from typing import Any, Optional
+
+import redis.asyncio as redis
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from app.core.config import settings
+
+
+class RedisCache:
+    """Async Redis cache client with connection pooling."""
+
+    def __init__(self):
+        self._pool: Optional[redis.ConnectionPool] = None
+        self._client: Optional[redis.Redis] = None
+
+    async def initialize(self) -> None:
+        """Initialize connection pool."""
+        if not self._pool:
+            self._pool = redis.ConnectionPool.from_url(
+                str(settings.REDIS_URL),
+                max_connections=settings.REDIS_MAX_CONNECTIONS,
+                decode_responses=True,
+            )
+            self._client = redis.Redis(connection_pool=self._pool)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+    )
+    async def get(self, key: str) -> Optional[Any]:
+        """Get value from cache."""
+        if not self._client:
+            await self.initialize()
+        data = await self._client.get(key)
+        if data:
+            return json.loads(data)
+        return None
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+    )
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        expire: int = 3600,  # seconds
+    ) -> None:
+        """Set value in cache with expiration."""
+        if not self._client:
+            await self.initialize()
+        await self._client.setex(key, expire, json.dumps(value))
+
+    async def delete(self, key: str) -> None:
+        """Delete key from cache."""
+        if not self._client:
+            await self.initialize()
+        await self._client.delete(key)
+
+    async def clear_pattern(self, pattern: str) -> None:
+        """Delete keys matching pattern."""
+        if not self._client:
+            await self.initialize()
+        keys = await self._client.keys(pattern)
+        if keys:
+            await self._client.delete(*keys)
+
+    async def close(self) -> None:
+        """Close connection pool."""
+        if self._pool:
+            await self._pool.disconnect()
+
+
+# Global cache instance
+cache = RedisCache()
+"""
+Context variables for request-scoped data.
+"""
+from contextvars import ContextVar
+
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
+"""
+Context variables for request-scoped data.
+"""
+from contextvars import ContextVar
+
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
+"""
+Pytest fixtures for integration tests.
+"""
+import pytest
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+from app.core.config import settings
+from app.db.base import Base
+from app.db.session import get_session
+from app.main import app
+
+# Use a separate test database
+TEST_DATABASE_URL = settings.DATABASE_URL.replace("ediguide", "ediguide_test")
+
+
+@pytest.fixture(scope="session")
+async def engine():
+    """Create test database engine."""
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def db_session(engine):
+    """Create a fresh database session for each test."""
+    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    async with async_session() as session:
+        yield session
+        await session.rollback()
+
+
+@pytest.fixture
+async def client(db_session):
+    """FastAPI test client with overridden database dependency."""
+
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_session] = override_get_db
+
+    from httpx import AsyncClient
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+"""
+Tests for health endpoints.
+"""
+import pytest
+from httpx import AsyncClient
+
+
+@pytest.mark.asyncio
+async def test_health_check(client: AsyncClient):
+    """Test the comprehensive health check endpoint."""
+    response = await client.get("/api/v1/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] in ("ok", "degraded")
+    assert data["version"] == "0.1.0"
+    assert "database" in data
+    assert "redis" in data
+
+
+@pytest.mark.asyncio
+async def test_readiness(client: AsyncClient):
+    """Test readiness probe."""
+    response = await client.get("/api/v1/health/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+@pytest.mark.asyncio
+async def test_liveness(client: AsyncClient):
+    """Test liveness probe."""
+    response = await client.get("/api/v1/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "alive"}
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.env
+.venv
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Alembic
+alembic/versions/*.pyc
+
+# Docker
+*.pid

@@ -6642,3 +6642,562 @@ export default function LoginPage() {
     </div>
   );
 }
+backend/
+├── app/
+│   ├── models/
+│   │   └── analytics.py
+│   ├── schemas/
+│   │   └── analytics.py
+│   ├── routes/
+│   │   └── analytics.py
+│   ├── services/
+│   │   └── analytics.py
+│   ├── core/
+│   │   ├── config.py
+│   │   ├── deps.py
+│   │   └── logging.py
+│   └── main.py
+├── migrations/
+│   └── versions/
+│       └── xxxx_create_analytics_events.py
+├── tests/
+│   └── test_analytics.py
+└── requirements.txt
+
+frontend/
+├── lib/
+│   ├── analytics.ts
+│   └── consent.ts
+├── hooks/
+│   └── useAnalytics.ts
+├── components/
+│   └── ConsentBanner.tsx
+└── pages/
+    └── _app.tsx          (integration example)
+import uuid
+from sqlalchemy import Column, String, Integer, BigInteger, JSON, DateTime, Index, func
+from sqlalchemy.dialects.postgresql import UUID, INET
+from app.core.database import Base
+
+class AnalyticsEvent(Base):
+    __tablename__ = "analytics_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_name = Column(String(100), nullable=False)
+    properties = Column(JSON, nullable=False, server_default='{}')
+    session_id = Column(String(255), nullable=True, index=True)
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    ip_address = Column(INET, nullable=True)
+    user_agent = Column(String(512), nullable=True)
+    page_url = Column(String(2048), nullable=True)
+    referrer = Column(String(2048), nullable=True)
+    device_type = Column(String(50), nullable=True)          # mobile/tablet/desktop
+    country = Column(String(2), nullable=True)               # ISO country code
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    # Composite index for common queries
+    __table_args__ = (
+        Index('ix_analytics_events_event_created', 'event_name', 'created_at'),
+        Index('ix_analytics_events_session_created', 'session_id', 'created_at'),
+    )
+from pydantic import BaseModel, Field, validator
+from typing import Optional, Dict, Any
+from uuid import UUID
+from datetime import datetime
+
+class AnalyticsEventBase(BaseModel):
+    event_name: str = Field(..., max_length=100)
+    properties: Dict[str, Any] = Field(default_factory=dict)
+    session_id: Optional[str] = Field(None, max_length=255)
+    page_url: Optional[str] = Field(None, max_length=2048)
+    referrer: Optional[str] = Field(None, max_length=2048)
+
+    @validator('event_name')
+    def event_name_not_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError('event_name must not be empty')
+        return v.strip().lower()
+
+class AnalyticsEventCreate(AnalyticsEventBase):
+    pass
+
+class AnalyticsEvent(AnalyticsEventBase):
+    id: UUID
+    user_id: Optional[UUID]
+    ip_address: Optional[str]
+    user_agent: Optional[str]
+    device_type: Optional[str]
+    country: Optional[str]
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+# Batch tracking
+class AnalyticsEventBatch(BaseModel):
+    events: list[AnalyticsEventCreate]
+import logging
+from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.schemas.analytics import AnalyticsEventCreate, AnalyticsEventBatch
+from app.services.analytics import process_event, process_event_batch
+from app.core.deps import get_db, get_client_info
+from app.core.logging import get_logger
+
+router = APIRouter(prefix="/analytics", tags=["analytics"])
+logger = get_logger(__name__)
+
+@router.post("/track", status_code=202)
+async def track_event(
+    event: AnalyticsEventCreate,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    client_info: dict = Depends(get_client_info),
+):
+    """
+    Accept a single analytics event and process it in the background.
+    Returns 202 Accepted immediately.
+    """
+    try:
+        # Add request metadata
+        event_data = event.dict()
+        event_data.update(client_info)
+
+        background_tasks.add_task(process_event, db, event_data)
+        logger.debug(f"Queued event {event.event_name} for processing")
+        return {"status": "accepted"}
+    except Exception as e:
+        logger.error(f"Failed to queue event: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/track/batch", status_code=202)
+async def track_event_batch(
+    batch: AnalyticsEventBatch,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    client_info: dict = Depends(get_client_info),
+):
+    """
+    Accept a batch of analytics events.
+    """
+    try:
+        enriched_events = []
+        for event in batch.events:
+            event_data = event.dict()
+            event_data.update(client_info)
+            enriched_events.append(event_data)
+
+        background_tasks.add_task(process_event_batch, db, enriched_events)
+        logger.debug(f"Queued batch of {len(batch.events)} events")
+        return {"status": "accepted", "count": len(batch.events)}
+    except Exception as e:
+        logger.error(f"Failed to queue batch: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+import logging
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.analytics import AnalyticsEvent
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+async def process_event(db: AsyncSession, event_data: dict):
+    """Insert a single event into the database."""
+    try:
+        db_event = AnalyticsEvent(**event_data)
+        db.add(db_event)
+        await db.commit()
+        logger.debug(f"Stored event {event_data.get('event_name')}")
+    except Exception as e:
+        logger.error(f"Failed to store event: {e}")
+        await db.rollback()
+
+async def process_event_batch(db: AsyncSession, events_data: list[dict]):
+    """Insert multiple events in one go (more efficient)."""
+    try:
+        db_events = [AnalyticsEvent(**data) for data in events_data]
+        db.add_all(db_events)
+        await db.commit()
+        logger.debug(f"Stored batch of {len(events_data)} events")
+    except Exception as e:
+        logger.error(f"Failed to store event batch: {e}")
+        await db.rollback()
+from fastapi import Request
+from user_agents import parse
+import ipaddress
+
+async def get_client_info(request: Request) -> dict:
+    """
+    Extract IP, user agent, device type, and country from the request.
+    (Country requires a GeoIP database – here we use a placeholder.)
+    """
+    client_host = request.client.host if request.client else "0.0.0.0"
+    # Anonymise IP (last octet to zero for IPv4)
+    try:
+        ip = ipaddress.ip_address(client_host)
+        if isinstance(ip, ipaddress.IPv4Address):
+            anonymised = str(ipaddress.IPv4Address(int(ip) & 0xFFFFFF00))
+        else:
+            # IPv6: zero the last 80 bits (simplified)
+            anonymised = str(ipaddress.IPv6Address(int(ip) & 0xFFFFFFFFFFFFFFFFFFFF0000))
+    except:
+        anonymised = client_host
+
+    user_agent_string = request.headers.get("user-agent", "")
+    ua = parse(user_agent_string)
+    device_type = "mobile" if ua.is_mobile else "tablet" if ua.is_tablet else "desktop"
+
+    # Country – would come from a GeoIP lookup; here we simulate
+    country = "GB"  # default, you can integrate GeoIP
+
+    return {
+        "ip_address": anonymised,
+        "user_agent": user_agent_string[:512],
+        "device_type": device_type,
+        "country": country,
+    }
+import logging
+import sys
+
+def get_logger(name: str) -> logging.Logger:
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+    return logger
+"""create analytics_events table
+
+Revision ID: xxxx
+Revises: 
+Create Date: 2025-04-01
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID, INET, JSON
+
+# revision identifiers, used by Alembic.
+revision = 'xxxx'
+down_revision = None
+branch_labels = None
+depends_on = None
+
+def upgrade():
+    op.create_table(
+        'analytics_events',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
+        sa.Column('event_name', sa.String(100), nullable=False),
+        sa.Column('properties', JSON, nullable=False, server_default='{}'),
+        sa.Column('session_id', sa.String(255), nullable=True),
+        sa.Column('user_id', UUID(as_uuid=True), nullable=True),
+        sa.Column('ip_address', INET, nullable=True),
+        sa.Column('user_agent', sa.String(512), nullable=True),
+        sa.Column('page_url', sa.String(2048), nullable=True),
+        sa.Column('referrer', sa.String(2048), nullable=True),
+        sa.Column('device_type', sa.String(50), nullable=True),
+        sa.Column('country', sa.String(2), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    )
+    op.create_index('ix_analytics_events_event_created', 'analytics_events', ['event_name', 'created_at'])
+    op.create_index('ix_analytics_events_session_created', 'analytics_events', ['session_id', 'created_at'])
+    op.create_index(op.f('ix_analytics_events_session_id'), 'analytics_events', ['session_id'], unique=False)
+    op.create_index(op.f('ix_analytics_events_user_id'), 'analytics_events', ['user_id'], unique=False)
+
+def downgrade():
+    op.drop_table('analytics_events')
+import pytest
+from httpx import AsyncClient
+from app.main import app
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from app.models.analytics import AnalyticsEvent
+from app.core.database import Base, get_db
+
+# Use a test database
+TEST_DATABASE_URL = "postgresql+asyncpg://user:pass@localhost/test_db"
+
+@pytest.fixture
+async def client():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        yield ac
+
+@pytest.fixture
+async def db_session():
+    engine = create_async_engine(TEST_DATABASE_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
+        yield session
+    await engine.dispose()
+
+async def test_track_event(client, db_session):
+    payload = {
+        "event_name": "page_view",
+        "properties": {"page": "/rankings"},
+        "session_id": "test-session"
+    }
+    resp = await client.post("/analytics/track", json=payload)
+    assert resp.status_code == 202
+    # Allow background task to run (in real test you'd mock or wait)
+    import asyncio
+    await asyncio.sleep(0.1)
+    # Verify event was stored
+    stmt = select(AnalyticsEvent).where(AnalyticsEvent.session_id == "test-session")
+    result = await db_session.execute(stmt)
+    event = result.scalar_one()
+    assert event.event_name == "page_view"
+// Analytics client with batching, retry, and offline queue
+interface Event {
+  event_name: string;
+  properties?: Record<string, any>;
+  session_id?: string;
+  page_url?: string;
+  referrer?: string;
+  timestamp?: string;
+}
+
+interface QueuedEvent extends Event {
+  retryCount: number;
+}
+
+class AnalyticsClient {
+  private apiUrl: string;
+  private sessionId: string;
+  private userId?: string;
+  private batchSize: number = 10;
+  private flushInterval: number = 5000; // ms
+  private queue: QueuedEvent[] = [];
+  private timer: NodeJS.Timeout | null = null;
+  private maxRetries: number = 3;
+
+  constructor(apiUrl: string) {
+    this.apiUrl = apiUrl;
+    this.sessionId = this.getOrCreateSessionId();
+    this.startFlushTimer();
+  }
+
+  private getOrCreateSessionId(): string {
+    let sid = sessionStorage.getItem('analytics_session_id');
+    if (!sid) {
+      sid = crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}_${Math.random()}`;
+      sessionStorage.setItem('analytics_session_id', sid);
+    }
+    return sid;
+  }
+
+  setUserId(id: string) {
+    this.userId = id;
+  }
+
+  track(eventName: string, properties?: Record<string, any>) {
+    const event: QueuedEvent = {
+      event_name: eventName,
+      properties: properties || {},
+      session_id: this.sessionId,
+      page_url: window.location.href,
+      referrer: document.referrer,
+      timestamp: new Date().toISOString(),
+      retryCount: 0,
+    };
+    this.queue.push(event);
+    if (this.queue.length >= this.batchSize) {
+      this.flush();
+    }
+  }
+
+  private startFlushTimer() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = setInterval(() => this.flush(), this.flushInterval);
+  }
+
+  private async flush() {
+    if (this.queue.length === 0) return;
+
+    const eventsToSend = [...this.queue];
+    this.queue = [];
+
+    try {
+      const response = await fetch(`${this.apiUrl}/analytics/track/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events: eventsToSend }),
+        keepalive: true, // ensures request completes even if page unloads
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.warn('Failed to send analytics events, re-queueing', error);
+      // Re-queue with retry count
+      const failedEvents = eventsToSend.map(e => ({
+        ...e,
+        retryCount: e.retryCount + 1,
+      })).filter(e => e.retryCount <= this.maxRetries);
+      this.queue.unshift(...failedEvents);
+    }
+  }
+
+  // Call this on page unload to send remaining events
+  async flushImmediate(): Promise<void> {
+    if (this.queue.length === 0) return;
+    const events = [...this.queue];
+    this.queue = [];
+    try {
+      await fetch(`${this.apiUrl}/analytics/track/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events }),
+        keepalive: true,
+      });
+    } catch (e) {
+      // Last resort: store in localStorage for next session
+      const stored = localStorage.getItem('analytics_offline_queue');
+      const offline = stored ? JSON.parse(stored) : [];
+      localStorage.setItem('analytics_offline_queue', JSON.stringify([...offline, ...events]));
+    }
+  }
+}
+
+export const analytics = new AnalyticsClient(process.env.NEXT_PUBLIC_API_URL || '/api');
+import { useEffect, useCallback } from 'react';
+import { analytics } from '../lib/analytics';
+import { useRouter } from 'next/router';
+
+export function useAnalytics() {
+  const router = useRouter();
+
+  // Track page views automatically
+  useEffect(() => {
+    const handleRouteChange = (url: string) => {
+      analytics.track('page_view', { url, route: url });
+    };
+    router.events.on('routeChangeComplete', handleRouteChange);
+    // Initial page view
+    handleRouteChange(router.asPath);
+    return () => {
+      router.events.off('routeChangeComplete', handleRouteChange);
+    };
+  }, [router]);
+
+  const trackEvent = useCallback((eventName: string, properties?: any) => {
+    analytics.track(eventName, properties);
+  }, []);
+
+  const setUserId = useCallback((id: string) => {
+    analytics.setUserId(id);
+  }, []);
+
+  return { trackEvent, setUserId };
+}
+export type ConsentState = 'granted' | 'denied' | 'pending';
+
+let consent: ConsentState = 'pending';
+
+export function setConsent(state: ConsentState) {
+  consent = state;
+  localStorage.setItem('analytics_consent', state);
+  if (state === 'granted') {
+    // Resume sending events if we have offline queue
+    processOfflineQueue();
+  }
+}
+
+export function getConsent(): ConsentState {
+  if (consent === 'pending') {
+    const stored = localStorage.getItem('analytics_consent') as ConsentState | null;
+    consent = stored || 'pending';
+  }
+  return consent;
+}
+
+async function processOfflineQueue() {
+  const queue = localStorage.getItem('analytics_offline_queue');
+  if (!queue) return;
+  const events = JSON.parse(queue);
+  if (events.length === 0) return;
+  // Send them now
+  try {
+    await fetch('/api/analytics/track/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events }),
+    });
+    localStorage.removeItem('analytics_offline_queue');
+  } catch (e) {
+    // Keep for next attempt
+  }
+}
+import React, { useState, useEffect } from 'react';
+import { setConsent, getConsent } from '../lib/consent';
+
+export const ConsentBanner: React.FC = () => {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    if (getConsent() === 'pending') {
+      setShow(true);
+    }
+  }, []);
+
+  const accept = () => {
+    setConsent('granted');
+    setShow(false);
+  };
+
+  const deny = () => {
+    setConsent('denied');
+    setShow(false);
+  };
+
+  if (!show) return null;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 bg-deep-navy text-white p-4 shadow-lg z-50">
+      <div className="container mx-auto flex flex-col md:flex-row items-center justify-between">
+        <p className="text-sm">
+          We use cookies and similar technologies to improve your experience and analyse our traffic.
+          By clicking "Accept", you consent to our use of analytics tools.
+        </p>
+        <div className="flex gap-3 mt-3 md:mt-0">
+          <button onClick={accept} className="bg-turquoise text-white px-4 py-2 rounded-lg text-sm">
+            Accept
+          </button>
+          <button onClick={deny} className="bg-soft-grey text-deep-navy px-4 py-2 rounded-lg text-sm">
+            Deny
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+import type { AppProps } from 'next/app';
+import { useEffect } from 'react';
+import { useAnalytics } from '../hooks/useAnalytics';
+import { ConsentBanner } from '../components/ConsentBanner';
+import '../styles/globals.css';
+
+function MyApp({ Component, pageProps }: AppProps) {
+  const { trackEvent } = useAnalytics();
+
+  useEffect(() => {
+    // Example: track custom event after login
+    if (pageProps.user) {
+      trackEvent('user_login', { userId: pageProps.user.id });
+    }
+  }, [pageProps.user, trackEvent]);
+
+  return (
+    <>
+      <Component {...pageProps} />
+      <ConsentBanner />
+    </>
+  );
+}
+
+export default MyApp;

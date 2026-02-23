@@ -8456,3 +8456,1248 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+ediguide/
+├── backend/
+│   ├── app/
+│   │   ├── models/
+│   │   │   └── university.py
+│   │   ├── schemas/
+│   │   │   └── university.py
+│   │   ├── routes/
+│   │   │   └── universities.py
+│   │   ├── services/
+│   │   │   └── university_service.py
+│   │   └── database.py
+│   ├── alembic/
+│   │   └── versions/
+│   │       └── 001_create_universities.py
+│   ├── scripts/
+│   │   └── seed_universities.py
+│   └── tests/
+│       └── test_universities.py
+├── frontend/
+│   ├── app/
+│   │   └── rankings/
+│   │       └── page.tsx
+│   ├── components/
+│   │   └── rankings/
+│   │       ├── UniversityTable.tsx
+│   │       ├── FilterBar.tsx
+│   │       ├── Pagination.tsx
+│   │       ├── TableHeader.tsx
+│   │       ├── TableRow.tsx
+│   │       └── LoadingSkeleton.tsx
+│   ├── hooks/
+│   │   └── useUniversities.ts
+│   ├── types/
+│   │   └── university.ts
+│   ├── utils/
+│   │   └── formatters.ts
+│   └── tests/
+│       └── rankings.test.tsx
+└── README.md
+# backend/app/database.py
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql://user:pass@localhost/ediguide"
+)
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+# backend/app/models/university.py
+from sqlalchemy import Column, Integer, String, Float, Text
+from backend.app.database import Base
+
+class University(Base):
+    __tablename__ = "universities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rank = Column(Integer, nullable=False, unique=True, index=True)
+    name = Column(String(255), nullable=False, index=True)
+    region = Column(String(100), nullable=False)
+    composite_score = Column(Float, nullable=False)
+    pct_diff_from_median = Column(Float, nullable=False)  # e.g., 98.85
+    roi_percent = Column(Float, nullable=False)            # e.g., 356.0
+    lifetime_gain = Column(Integer, nullable=False)        # in GBP, 2026 money
+    investment_2024 = Column(Integer, nullable=False)      # total investment in 2024
+    description = Column(Text, nullable=True)              # optional blurb
+
+    def __repr__(self):
+        return f"<University {self.rank}: {self.name}>"
+# backend/app/schemas/university.py
+from pydantic import BaseModel, Field
+from typing import Optional
+
+class UniversityBase(BaseModel):
+    rank: int
+    name: str
+    region: str
+    composite_score: float
+    pct_diff_from_median: float
+    roi_percent: float
+    lifetime_gain: int
+    investment_2024: int
+    description: Optional[str] = None
+
+class UniversityCreate(UniversityBase):
+    pass
+
+class UniversityUpdate(BaseModel):
+    rank: Optional[int] = None
+    name: Optional[str] = None
+    region: Optional[str] = None
+    composite_score: Optional[float] = None
+    pct_diff_from_median: Optional[float] = None
+    roi_percent: Optional[float] = None
+    lifetime_gain: Optional[int] = None
+    investment_2024: Optional[int] = None
+    description: Optional[str] = None
+
+class UniversityInDB(UniversityBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+# For paginated responses
+class UniversityListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    data: list[UniversityInDB]
+# backend/app/schemas/university.py
+from pydantic import BaseModel, Field
+from typing import Optional
+
+class UniversityBase(BaseModel):
+    rank: int
+    name: str
+    region: str
+    composite_score: float
+    pct_diff_from_median: float
+    roi_percent: float
+    lifetime_gain: int
+    investment_2024: int
+    description: Optional[str] = None
+
+class UniversityCreate(UniversityBase):
+    pass
+
+class UniversityUpdate(BaseModel):
+    rank: Optional[int] = None
+    name: Optional[str] = None
+    region: Optional[str] = None
+    composite_score: Optional[float] = None
+    pct_diff_from_median: Optional[float] = None
+    roi_percent: Optional[float] = None
+    lifetime_gain: Optional[int] = None
+    investment_2024: Optional[int] = None
+    description: Optional[str] = None
+
+class UniversityInDB(UniversityBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+# For paginated responses
+class UniversityListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    data: list[UniversityInDB]
+# backend/app/services/university_service.py
+# (currently empty because filtering is done directly in the route;
+#  can be extended later for complex business logic)
+# backend/alembic/versions/001_create_universities.py
+"""create universities table
+
+Revision ID: 001
+Revises: 
+Create Date: 2025-03-22 10:00:00.000000
+
+"""
+from alembic import op
+import sqlalchemy as sa
+
+# revision identifiers, used by Alembic.
+revision = '001'
+down_revision = None
+branch_labels = None
+depends_on = None
+
+def upgrade():
+    op.create_table(
+        'universities',
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('rank', sa.Integer(), nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('region', sa.String(length=100), nullable=False),
+        sa.Column('composite_score', sa.Float(), nullable=False),
+        sa.Column('pct_diff_from_median', sa.Float(), nullable=False),
+        sa.Column('roi_percent', sa.Float(), nullable=False),
+        sa.Column('lifetime_gain', sa.Integer(), nullable=False),
+        sa.Column('investment_2024', sa.Integer(), nullable=False),
+        sa.Column('description', sa.Text(), nullable=True),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('rank')
+    )
+    op.create_index(op.f('ix_universities_id'), 'universities', ['id'], unique=False)
+    op.create_index(op.f('ix_universities_name'), 'universities', ['name'], unique=False)
+    op.create_index(op.f('ix_universities_rank'), 'universities', ['rank'], unique=True)
+
+def downgrade():
+    op.drop_index(op.f('ix_universities_rank'), table_name='universities')
+    op.drop_index(op.f('ix_universities_name'), table_name='universities')
+    op.drop_index(op.f('ix_universities_id'), table_name='universities')
+    op.drop_table('universities')
+# backend/scripts/seed_universities.py
+"""
+Seed script to populate the universities table with data from the PDF.
+Run with: python -m backend.scripts.seed_universities
+"""
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.database import SessionLocal
+from app.models.university import University
+
+# Data extracted from pages 47-57 and 89-92 of the PDF.
+# Each tuple: (rank, name, region, composite_score, pct_diff, roi_percent, lifetime_gain, investment_2024)
+# pct_diff is stored as a float (e.g., 98.85 for "98.85% better")
+# investment_2024 is taken from the "Investment (2024 £)" column.
+
+UNIVERSITY_DATA = [
+    (1, "University of Oxford", "South East", 10.48, 98.85, 356.0, 347100, 93750),
+    (2, "University of Cambridge", "South East", 12.05, 98.68, 352.0, 343200, 93750),
+    (3, "Imperial College London", "London", 40.23, 95.60, 295.0, 296900, 96750),
+    (4, "UCL", "London", 47.02, 94.85, 289.0, 291000, 96750),
+    (5, "London School of Economics", "London", 57.05, 93.76, 283.0, 284900, 96750),
+    (6, "University of Warwick", "West Midlands", 83.14, 90.90, 271.0, 251500, 89250),
+    (7, "University of Edinburgh", "Scotland", 85.83, 90.61, 269.0, 245400, 87750),
+    (8, "University of Bristol", "South West", 87.57, 90.42, 267.0, 247800, 89250),
+    (9, "King's College London", "London", 94.53, 89.66, 262.0, 263700, 96750),
+    (10, "Durham University", "North East", 102.6, 88.78, 257.0, 226600, 84750),
+    (11, "University of St Andrews", "Scotland", 114.0, 87.53, 250.0, 228200, 87750),
+    (12, "University of Sheffield", "Yorkshire", 118.1, 87.08, 248.0, 222500, 86250),
+    (13, "University of Birmingham", "West Midlands", 129.8, 85.80, 241.0, 223700, 89250),
+    (14, "University of Southampton", "South East", 131.9, 85.57, 240.0, 234000, 93750),
+    (15, "University of Manchester", "North West", 134.0, 85.34, 239.0, 218100, 87750),
+    (16, "University of Exeter", "South West", 135.2, 85.21, 238.0, 220900, 89250),
+    (17, "University of Glasgow", "Scotland", 143.1, 84.35, 234.0, 213500, 87750),
+    (18, "University of Liverpool", "North West", 147.0, 83.92, 232.0, 211700, 87750),
+    (19, "University of Leeds", "Yorkshire", 155.8, 82.96, 227.0, 203600, 86250),
+    (20, "Lancaster University", "North West", 163.3, 82.13, 223.0, 203500, 87750),
+    (21, "University of York", "Yorkshire", 182.0, 80.09, 214.0, 191900, 86250),
+    (22, "University of Nottingham", "East Midlands", 191.8, 79.02, 209.0, 190700, 87750),
+    (23, "Cardiff University", "Wales", 216.8, 76.28, 198.0, 174500, 84750),
+    (24, "University of Bath", "South West", 228.0, 75.05, 193.0, 179100, 89250),
+    (25, "Queen's University Belfast", "Northern Ireland", 235.7, 74.22, 189.0, 163600, 83250),
+    (26, "University of Aberdeen", "Scotland", 254.3, 72.18, 181.0, 165200, 87750),
+    (27, "Queen Mary, University of London", "London", 265.1, 71.00, 177.0, 178100, 96750),
+    (28, "Newcastle University", "North East", 268.8, 70.59, 175.0, 154200, 84750),
+    (28, "University of Reading", "South East", 268.8, 70.59, 175.0, 170600, 93750),   # same rank 28
+    (29, "Loughborough University", "East Midlands", 288.9, 68.39, 167.0, 152400, 87750),
+    (30, "University of Surrey", "South East", 291.4, 68.12, 166.0, 161800, 93750),
+    (31, "University of Dundee", "Scotland", 328.3, 64.09, 154.0, 140600, 87750),
+    (32, "University of Leicester", "East Midlands", 331.7, 63.72, 153.0, 139600, 87750),
+    (33, "University of Strathclyde", "Scotland", 335.3, 63.32, 152.0, 138700, 87750),
+    (34, "University of Essex", "East of England", 358.4, 60.79, 145.0, 139100, 92250),
+    (35, "University of Sussex", "South East", 384.8, 57.91, 138.0, 134600, 93750),
+    (36, "Heriot-Watt University", "Scotland", 423.8, 53.65, 128.0, 116800, 87750),
+    (37, "Swansea University", "Wales", 429.7, 52.99, 126.0, 111000, 84750),
+    (38, "University of East Anglia", "East of England", 432.5, 52.69, 125.0, 119900, 92250),
+    (39, "Aston University", "West Midlands", 457.5, 49.95, 119.0, 110500, 89250),
+    (40, "Birkbeck, University of London", "London", 531.0, 41.92, 102.0, 102600, 96750),
+    (41, "University of Kent", "South East", 558.3, 38.91, 96.0, 93600, 93750),
+    (42, "Royal Holloway, University of London", "South East", 563.9, 38.31, 95.0, 92600, 93750),
+    (43, "Northumbria University", "North East", 575.1, 37.07, 93.0, 82000, 84750),
+    (44, "City St. George's, University of London", "London", 575.3, 37.05, 93.0, 93600, 96750),
+    (45, "Manchester Metropolitan University", "North West", 593.9, 35.02, 89.0, 81200, 87750),
+    (46, "Nottingham Trent University", "East Midlands", 612.9, 32.96, 85.0, 77600, 87750),
+    (47, "University of Portsmouth", "South East", 618.2, 32.37, 84.0, 81900, 93750),
+    (48, "Oxford Brookes University", "South East", 638.9, 30.08, 80.0, 78000, 93750),
+    (49, "Bangor University", "Wales", 675.1, 26.13, 73.0, 64300, 84750),
+    (50, "University of the West of England", "South West", 683.6, 25.20, 72.0, 66800, 89250),
+    (51, "Aberystwyth University", "Wales", 694.8, 23.97, 70.0, 61700, 84750),
+    (52, "Ulster University", "Northern Ireland", 695.2, 23.93, 70.0, 60600, 83250),
+    (53, "Keele University", "West Midlands", 745.6, 18.41, 61.0, 56600, 89250),
+    (54, "University of Stirling", "Scotland", 750.8, 17.86, 60.0, 54800, 87750),
+    (55, "SOAS, University of London", "London", 782.5, 14.37, 55.0, 55300, 96750),
+    (56, "University of Lincoln", "East Midlands", 801.9, 12.25, 51.0, 46500, 87750),
+    (57, "Goldsmiths, University of London", "London", 803.0, 12.13, 51.0, 51300, 96750),
+    (58, "Brunel University London", "London", 804.9, 11.92, 51.0, 51300, 96750),
+    (59, "Coventry University", "West Midlands", 815.8, 10.74, 49.0, 45500, 89250),
+    (60, "Liverpool John Moores University", "North West", 824.7, 9.76, 47.0, 42900, 87750),
+    (61, "University of Huddersfield", "Yorkshire", 830.1, 9.16, 46.0, 41300, 86250),
+    (62, "University of Bradford", "Yorkshire", 832.0, 8.96, 46.0, 41300, 86250),
+    (63, "University of Hull", "Yorkshire", 835.4, 8.59, 45.0, 40400, 86250),
+    (64, "University of Hertfordshire", "East of England", 890.8, 2.53, 38.0, 36500, 92250),
+    (65, "Kingston University", "London", 904.9, 0.98, 36.0, 36200, 96750),
+    (66, "Edinburgh Napier University", "Scotland", 958.9, -4.82, 31.0, 28300, 87750),
+    (67, "Bournemouth University", "South West", 981.5, -7.40, 29.0, 26900, 89250),
+    (68, "Robert Gordon University", "Scotland", 982.5, -7.51, 29.0, 26500, 87750),
+    (69, "University of Brighton", "South East", 1035.0, -13.25, 23.0, 22400, 93750),
+    (70, "University of Greenwich", "London", 1050.0, -14.90, 21.0, 21100, 96750),
+    (71, "London South Bank University", "London", 1107.0, -21.13, 16.0, 16100, 96750),
+    (72, "University of Derby", "East Midlands", 1141.67, -24.92, 12.0, 11000, 87750),
+    (73, "De Montfort University", "East Midlands", 1161.0, -27.03, 10.0, 9100, 87750),
+    (74, "Glasgow Caledonian University", "Scotland", 1175.0, -28.58, 9.0, 8200, 87750),
+    (75, "University of Westminster", "London", 1191.0, -30.33, 7.0, 7000, 96750),
+    (76, "Leeds Beckett University", "Yorkshire", 1278.0, -39.84, 0.0, 0, 86250),
+    (77, "University of Northampton", "East Midlands", 1297.22, -41.92, -2.0, -1800, 87750),
+    (78, "Sheffield Hallam University", "Yorkshire", 1291.67, -41.33, -1.0, -900, 86250),
+    (79, "University of East London", "London", 1308.33, -43.14, -3.0, -3000, 96750),
+    (80, "University of Central Lancashire", "North West", 1319.44, -44.36, -4.0, -3700, 87750),
+    (81, "Canterbury Christ Church University", "South East", 1447.22, -58.36, -15.0, -14600, 93750),
+    (82, "Birmingham City University", "West Midlands", 1464.0, -60.21, -17.0, -15800, 89250),
+    (83, "University of Wolverhampton", "West Midlands", 1488.89, -62.91, -19.0, -17600, 89250),
+    (84, "London Metropolitan University", "London", 1497.0, -63.80, -20.0, -20100, 96750),
+    (85, "Queen Margaret University, Edinburgh", "Scotland", 1558.33, -70.50, -27.0, -24600, 87750),
+    # Many universities share rank 86. We'll add them sequentially with unique ranks (86, 87, ...)
+    # But the PDF lumps them all at 86. To keep the database unique, we'll assign incremental ranks.
+    # Below are the rank-86 universities from page 55 onwards.
+    # We'll start at rank 86 and go up.
+]
+
+# Additional rank-86 universities (from page 55-57)
+EXTRA_UNIVERSITIES = [
+    (86, "University of the Arts London", "London", 1750.0, -91.48, -47.0, -47300, 96750),
+    (87, "Edge Hill University", "North West", 1750.0, -91.48, -47.0, -42900, 87750),
+    (88, "Norwich University of the Arts", "East of England", 1750.0, -91.48, -47.0, -45100, 92250),
+    (89, "University of Chichester", "South East", 1750.0, -91.48, -47.0, -45800, 93750),
+    (90, "Arts University Bournemouth", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (91, "Falmouth University", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (92, "Cardiff Metropolitan University", "Wales", 1750.0, -91.48, -47.0, -41400, 84750),
+    (93, "St Mary's University, Twickenham", "London", 1750.0, -91.48, -47.0, -47300, 96750),
+    (94, "University of Chester", "North West", 1750.0, -91.48, -47.0, -42900, 87750),
+    (95, "University of Plymouth", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (96, "University of South Wales", "Wales", 1750.0, -91.48, -47.0, -41400, 84750),
+    (97, "University of Salford", "North West", 1750.0, -91.48, -47.0, -42900, 87750),
+    (98, "University of Sunderland", "North East", 1750.0, -91.48, -47.0, -41400, 84750),
+    (99, "Liverpool Hope University", "North West", 1750.0, -91.48, -47.0, -42900, 87750),
+    (100, "Teesside University", "North East", 1750.0, -91.48, -47.0, -41400, 84750),
+    (101, "Bath Spa University", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (102, "University of Worcester", "West Midlands", 1750.0, -91.48, -47.0, -43600, 89250),
+    (103, "Staffordshire University", "West Midlands", 1750.0, -91.48, -47.0, -43600, 89250),
+    (104, "Abertay University", "Scotland", 1750.0, -91.48, -47.0, -42900, 87750),
+    (105, "Buckinghamshire New University", "South East", 1750.0, -91.48, -47.0, -45800, 93750),
+    (106, "University of Winchester", "South East", 1750.0, -91.48, -47.0, -45800, 93750),
+    (107, "Plymouth Marjon University", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (108, "Arts University Plymouth", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (109, "University of Greater Manchester", "North West", 1750.0, -91.48, -47.0, -42900, 87750),
+    (110, "Leeds Arts University", "Yorkshire", 1750.0, -91.48, -47.0, -42200, 86250),
+    (111, "York St John University", "Yorkshire", 1750.0, -91.48, -47.0, -42200, 86250),
+    (112, "Southampton Solent University", "South East", 1750.0, -91.48, -47.0, -45800, 93750),
+    (113, "University of Wales Trinity Saint David", "Wales", 1750.0, -91.48, -47.0, -41400, 84750),
+    (114, "University for the Creative Arts", "South East", 1750.0, -91.48, -47.0, -45800, 93750),
+    (115, "Middlesex University", "London", 1750.0, -91.48, -47.0, -47300, 96750),
+    (116, "University of Roehampton", "London", 1750.0, -91.48, -47.0, -47300, 96750),
+    (117, "University of Buckingham", "South East", 1750.0, -91.48, -47.0, -45800, 93750),
+    (118, "University of Cumbria", "North West", 1750.0, -91.48, -47.0, -42900, 87750),
+    (119, "Bishop Grosseteste University", "East Midlands", 1750.0, -91.48, -47.0, -42900, 87750),
+    (120, "Harper Adams University", "West Midlands", 1750.0, -91.48, -47.0, -43600, 89250),
+    (121, "University of Suffolk", "East of England", 1750.0, -91.48, -47.0, -45100, 92250),
+    (122, "University of West London", "London", 1750.0, -91.48, -47.0, -47300, 96750),
+    (123, "University of Gloucestershire", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (124, "Anglia Ruskin University", "East of England", 1750.0, -91.48, -47.0, -45100, 92250),
+    (125, "Leeds Trinity University", "Yorkshire", 1750.0, -91.48, -47.0, -42200, 86250),
+    (126, "Birmingham Newman University", "West Midlands", 1750.0, -91.48, -47.0, -43600, 89250),
+    (127, "Royal Agricultural University", "South West", 1750.0, -91.48, -47.0, -43600, 89250),
+    (128, "University of the West of Scotland", "Scotland", 1750.0, -91.48, -47.0, -42900, 87750),
+    (129, "Wrexham University", "Wales", 1750.0, -91.48, -47.0, -41400, 84750),
+    (130, "University of Bedfordshire", "East of England", 1750.0, -91.48, -47.0, -45100, 92250),
+    (131, "University of Law", "London", 1750.0, -91.48, -47.0, -47300, 96750),
+    (132, "BIMM University", "London", 1750.0, -91.48, -47.0, -47300, 96750),
+    (133, "University College Birmingham", "West Midlands", 1750.0, -91.48, -47.0, -43600, 89250),
+]
+
+def seed():
+    db = SessionLocal()
+    try:
+        # Clear existing
+        db.query(University).delete()
+        # Insert main data
+        for row in UNIVERSITY_DATA:
+            uni = University(
+                rank=row[0],
+                name=row[1],
+                region=row[2],
+                composite_score=row[3],
+                pct_diff_from_median=row[4],
+                roi_percent=row[5],
+                lifetime_gain=row[6],
+                investment_2024=row[7],
+                description=None  # can be added later
+            )
+            db.add(uni)
+        # Insert extra
+        for row in EXTRA_UNIVERSITIES:
+            uni = University(
+                rank=row[0],
+                name=row[1],
+                region=row[2],
+                composite_score=row[3],
+                pct_diff_from_median=row[4],
+                roi_percent=row[5],
+                lifetime_gain=row[6],
+                investment_2024=row[7],
+                description=None
+            )
+            db.add(uni)
+        db.commit()
+        print(f"Seeded {len(UNIVERSITY_DATA) + len(EXTRA_UNIVERSITIES)} universities.")
+    except Exception as e:
+        db.rollback()
+        print(f"Error: {e}")
+    finally:
+        db.close()
+
+if __name__ == "__main__":
+    seed()
+# backend/tests/test_universities.py
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from backend.app.main import app  # assuming you have a main.py
+from backend.app.database import Base, get_db
+from backend.app.models.university import University
+
+# Use in-memory SQLite for testing
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def override_get_db():
+    try:
+        db = TestingSessionLocal()
+        yield db
+    finally:
+        db.close()
+
+app.dependency_overrides[get_db] = override_get_db
+
+client = TestClient(app)
+
+@pytest.fixture
+def setup_db():
+    Base.metadata.create_all(bind=engine)
+    # Add test data
+    db = TestingSessionLocal()
+    uni1 = University(
+        rank=1,
+        name="Test University A",
+        region="London",
+        composite_score=10.0,
+        pct_diff_from_median=90.0,
+        roi_percent=200.0,
+        lifetime_gain=300000,
+        investment_2024=90000
+    )
+    uni2 = University(
+        rank=2,
+        name="Test University B",
+        region="Scotland",
+        composite_score=20.0,
+        pct_diff_from_median=80.0,
+        roi_percent=150.0,
+        lifetime_gain=200000,
+        investment_2024=85000
+    )
+    db.add(uni1)
+    db.add(uni2)
+    db.commit()
+    db.close()
+    yield
+    Base.metadata.drop_all(bind=engine)
+
+def test_list_universities_default(setup_db):
+    response = client.get("/api/universities/")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert len(data["data"]) == 2
+    assert data["data"][0]["name"] == "Test University A"  # sorted by rank asc
+
+def test_filter_by_name(setup_db):
+    response = client.get("/api/universities/?name=University%20B")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["data"][0]["name"] == "Test University B"
+
+def test_filter_by_region(setup_db):
+    response = client.get("/api/universities/?region=London")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["data"][0]["region"] == "London"
+
+def test_filter_by_roi_range(setup_db):
+    response = client.get("/api/universities/?min_roi=160&max_roi=210")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["data"][0]["roi_percent"] == 200.0
+
+def test_sort_by_lifetime_gain_desc(setup_db):
+    response = client.get("/api/universities/?sort_by=lifetime_gain&sort_order=desc")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"][0]["name"] == "Test University A"  # higher gain
+
+def test_pagination(setup_db):
+    response = client.get("/api/universities/?page=1&page_size=1")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert len(data["data"]) == 1
+    assert data["data"][0]["rank"] == 1
+
+def test_regions_endpoint(setup_db):
+    response = client.get("/api/universities/regions")
+    assert response.status_code == 200
+    regions = response.json()
+    assert set(regions) == {"London", "Scotland"}
+
+def test_get_single_university(setup_db):
+    response = client.get("/api/universities/1")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "Test University A"
+
+def test_get_nonexistent_university(setup_db):
+    response = client.get("/api/universities/999")
+    assert response.status_code == 404
+// frontend/types/university.ts
+export interface University {
+  id: number;
+  rank: number;
+  name: string;
+  region: string;
+  composite_score: number;
+  pct_diff_from_median: number;
+  roi_percent: number;
+  lifetime_gain: number;
+  investment_2024: number;
+  description: string | null;
+}
+
+export interface UniversityListResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  data: University[];
+}
+
+export interface FilterParams {
+  name?: string;
+  region?: string;
+  min_roi?: number;
+  max_roi?: number;
+  min_lifetime_gain?: number;
+  max_lifetime_gain?: number;
+  sort_by?: 'rank' | 'name' | 'roi_percent' | 'lifetime_gain' | 'composite_score';
+  sort_order?: 'asc' | 'desc';
+  page?: number;
+  page_size?: number;
+}
+// frontend/utils/formatters.ts
+export const formatCurrency = (value: number): string => {
+  return new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: 'GBP',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+};
+
+export const formatPercent = (value: number): string => {
+  return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`;
+};
+
+export const formatROI = (value: number): string => {
+  return `${value > 0 ? '+' : ''}${value.toFixed(0)}%`;
+};
+
+export const formatDiffFromMedian = (value: number): string => {
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}%`;
+};
+// frontend/hooks/useUniversities.ts
+import { useState, useEffect, useCallback } from 'react';
+import { University, UniversityListResponse, FilterParams } from '@/types/university';
+
+interface UseUniversitiesReturn {
+  universities: University[];
+  total: number;
+  loading: boolean;
+  error: string | null;
+  regions: string[];
+  fetchUniversities: (params?: FilterParams) => Promise<void>;
+  fetchRegions: () => Promise<void>;
+}
+
+export function useUniversities(initialParams?: FilterParams): UseUniversitiesReturn {
+  const [universities, setUniversities] = useState<University[]>([]);
+  const [total, setTotal] = useState<number>(0);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [regions, setRegions] = useState<string[]>([]);
+
+  const fetchUniversities = useCallback(async (params?: FilterParams) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const searchParams = new URLSearchParams();
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== '') {
+            searchParams.append(key, String(value));
+          }
+        });
+      }
+      const res = await fetch(`/api/universities/?${searchParams.toString()}`);
+      if (!res.ok) throw new Error(`Failed to fetch: ${res.statusText}`);
+      const data: UniversityListResponse = await res.json();
+      setUniversities(data.data);
+      setTotal(data.total);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const fetchRegions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/universities/regions');
+      if (!res.ok) throw new Error('Failed to fetch regions');
+      const data = await res.json();
+      setRegions(data);
+    } catch (err) {
+      console.error('Error fetching regions:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUniversities(initialParams);
+    fetchRegions();
+  }, [fetchUniversities, fetchRegions, initialParams]);
+
+  return {
+    universities,
+    total,
+    loading,
+    error,
+    regions,
+    fetchUniversities,
+    fetchRegions,
+  };
+}
+// frontend/components/rankings/FilterBar.tsx
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { FilterParams } from '@/types/university';
+
+interface FilterBarProps {
+  onFilterChange: (filters: FilterParams) => void;
+  regions: string[];
+  currentFilters: FilterParams;
+}
+
+export default function FilterBar({ onFilterChange, regions, currentFilters }: FilterBarProps) {
+  const [name, setName] = useState(currentFilters.name || '');
+  const [region, setRegion] = useState(currentFilters.region || '');
+  const [minRoi, setMinRoi] = useState(currentFilters.min_roi?.toString() || '');
+  const [maxRoi, setMaxRoi] = useState(currentFilters.max_roi?.toString() || '');
+  const [minGain, setMinGain] = useState(currentFilters.min_lifetime_gain?.toString() || '');
+  const [maxGain, setMaxGain] = useState(currentFilters.max_lifetime_gain?.toString() || '');
+
+  // Debounce name input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      onFilterChange({
+        ...currentFilters,
+        name: name || undefined,
+        region: region || undefined,
+        min_roi: minRoi ? parseFloat(minRoi) : undefined,
+        max_roi: maxRoi ? parseFloat(maxRoi) : undefined,
+        min_lifetime_gain: minGain ? parseInt(minGain, 10) : undefined,
+        max_lifetime_gain: maxGain ? parseInt(maxGain, 10) : undefined,
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [name, region, minRoi, maxRoi, minGain, maxGain, onFilterChange, currentFilters]);
+
+  const handleReset = () => {
+    setName('');
+    setRegion('');
+    setMinRoi('');
+    setMaxRoi('');
+    setMinGain('');
+    setMaxGain('');
+    onFilterChange({ page: 1 });
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-md p-6 mb-6 border border-soft-grey">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* University name */}
+        <div>
+          <label htmlFor="name" className="block text-sm font-medium text-slate mb-1">
+            University name
+          </label>
+          <input
+            type="text"
+            id="name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Oxford"
+            className="w-full px-4 py-2 border border-soft-grey rounded-lg focus:ring-2 focus:ring-turquoise focus:border-transparent"
+          />
+        </div>
+
+        {/* Region */}
+        <div>
+          <label htmlFor="region" className="block text-sm font-medium text-slate mb-1">
+            Region
+          </label>
+          <select
+            id="region"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            className="w-full px-4 py-2 border border-soft-grey rounded-lg focus:ring-2 focus:ring-turquoise focus:border-transparent"
+          >
+            <option value="">All regions</option>
+            {regions.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* ROI range */}
+        <div>
+          <label className="block text-sm font-medium text-slate mb-1">ROI % range</label>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              placeholder="Min"
+              value={minRoi}
+              onChange={(e) => setMinRoi(e.target.value)}
+              className="w-full px-4 py-2 border border-soft-grey rounded-lg focus:ring-2 focus:ring-turquoise"
+            />
+            <input
+              type="number"
+              placeholder="Max"
+              value={maxRoi}
+              onChange={(e) => setMaxRoi(e.target.value)}
+              className="w-full px-4 py-2 border border-soft-grey rounded-lg focus:ring-2 focus:ring-turquoise"
+            />
+          </div>
+        </div>
+
+        {/* Lifetime gain range */}
+        <div>
+          <label className="block text-sm font-medium text-slate mb-1">Lifetime gain (£)</label>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              placeholder="Min"
+              value={minGain}
+              onChange={(e) => setMinGain(e.target.value)}
+              className="w-full px-4 py-2 border border-soft-grey rounded-lg focus:ring-2 focus:ring-turquoise"
+            />
+            <input
+              type="number"
+              placeholder="Max"
+              value={maxGain}
+              onChange={(e) => setMaxGain(e.target.value)}
+              className="w-full px-4 py-2 border border-soft-grey rounded-lg focus:ring-2 focus:ring-turquoise"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-end mt-4">
+        <button
+          onClick={handleReset}
+          className="px-4 py-2 text-sm text-slate hover:text-charcoal transition-colors"
+        >
+          Reset filters
+        </button>
+      </div>
+    </div>
+  );
+}
+// frontend/components/rankings/TableHeader.tsx
+import React from 'react';
+import { FilterParams } from '@/types/university';
+
+interface TableHeaderProps {
+  sortBy: FilterParams['sort_by'];
+  sortOrder: FilterParams['sort_order'];
+  onSort: (field: NonNullable<FilterParams['sort_by']>) => void;
+}
+
+const headers = [
+  { key: 'rank', label: 'Rank', sortable: true, className: 'w-16' },
+  { key: 'name', label: 'University', sortable: true, className: 'min-w-[200px]' },
+  { key: 'region', label: 'Region', sortable: false, className: 'w-32' },
+  { key: 'composite_score', label: 'Composite', sortable: true, className: 'w-24' },
+  { key: 'pct_diff_from_median', label: 'vs Median', sortable: false, className: 'w-24' },
+  { key: 'roi_percent', label: 'ROI %', sortable: true, className: 'w-24' },
+  { key: 'lifetime_gain', label: 'Lifetime gain', sortable: true, className: 'w-32' },
+];
+
+export default function TableHeader({ sortBy, sortOrder, onSort }: TableHeaderProps) {
+  const renderSortIcon = (field: string) => {
+    if (sortBy !== field) return <span className="ml-1 text-soft-grey">↕️</span>;
+    return sortOrder === 'asc' ? <span className="ml-1">↑</span> : <span className="ml-1">↓</span>;
+  };
+
+  return (
+    <thead className="bg-navy text-white">
+      <tr>
+        {headers.map((header) => (
+          <th
+            key={header.key}
+            className={`px-4 py-3 text-left text-sm font-medium ${header.className}`}
+            onClick={() => header.sortable && onSort(header.key as any)}
+            style={{ cursor: header.sortable ? 'pointer' : 'default' }}
+          >
+            <div className="flex items-center">
+              {header.label}
+              {header.sortable && renderSortIcon(header.key)}
+            </div>
+          </th>
+        ))}
+      </tr>
+    </thead>
+  );
+}
+// frontend/components/rankings/TableRow.tsx
+import React from 'react';
+import { University } from '@/types/university';
+import { formatCurrency, formatROI, formatDiffFromMedian } from '@/utils/formatters';
+import Link from 'next/link';
+
+interface TableRowProps {
+  university: University;
+}
+
+export default function TableRow({ university }: TableRowProps) {
+  const roiClass = university.roi_percent >= 0 ? 'text-turquoise' : 'text-coral';
+  const gainClass = university.lifetime_gain >= 0 ? 'text-turquoise' : 'text-coral';
+
+  return (
+    <tr className="border-b border-soft-grey hover:bg-mint/10 transition-colors">
+      <td className="px-4 py-3 font-mono text-midnight-teal">{university.rank}</td>
+      <td className="px-4 py-3">
+        <Link href={`/university/${university.id}`} className="font-medium text-charcoal hover:text-turquoise">
+          {university.name}
+        </Link>
+      </td>
+      <td className="px-4 py-3 text-slate">{university.region}</td>
+      <td className="px-4 py-3 font-mono text-midnight-teal">{university.composite_score.toFixed(1)}</td>
+      <td className="px-4 py-3 font-mono text-midnight-teal">
+        {formatDiffFromMedian(university.pct_diff_from_median)}
+      </td>
+      <td className={`px-4 py-3 font-mono font-medium ${roiClass}`}>
+        {formatROI(university.roi_percent)}
+      </td>
+      <td className={`px-4 py-3 font-mono font-medium ${gainClass}`}>
+        {formatCurrency(university.lifetime_gain)}
+      </td>
+    </tr>
+  );
+}
+// frontend/components/rankings/Pagination.tsx
+import React from 'react';
+
+interface PaginationProps {
+  currentPage: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+}
+
+export default function Pagination({ currentPage, pageSize, total, onPageChange }: PaginationProps) {
+  const totalPages = Math.ceil(total / pageSize);
+
+  if (totalPages <= 1) return null;
+
+  const pages = Array.from({ length: totalPages }, (_, i) => i + 1);
+
+  return (
+    <div className="flex justify-center items-center gap-2 mt-8">
+      <button
+        onClick={() => onPageChange(currentPage - 1)}
+        disabled={currentPage === 1}
+        className="px-3 py-1 rounded-md bg-white border border-soft-grey disabled:opacity-50 disabled:cursor-not-allowed hover:bg-mint/10"
+      >
+        Previous
+      </button>
+      {pages.map((page) => (
+        <button
+          key={page}
+          onClick={() => onPageChange(page)}
+          className={`px-3 py-1 rounded-md ${
+            page === currentPage
+              ? 'bg-turquoise text-white'
+              : 'bg-white border border-soft-grey hover:bg-mint/10'
+          }`}
+        >
+          {page}
+        </button>
+      ))}
+      <button
+        onClick={() => onPageChange(currentPage + 1)}
+        disabled={currentPage === totalPages}
+        className="px-3 py-1 rounded-md bg-white border border-soft-grey disabled:opacity-50 disabled:cursor-not-allowed hover:bg-mint/10"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+// frontend/components/rankings/LoadingSkeleton.tsx
+import React from 'react';
+
+export default function LoadingSkeleton() {
+  return (
+    <div className="animate-pulse">
+      <div className="bg-white rounded-xl shadow-md p-6 mb-6">
+        <div className="h-10 bg-soft-grey rounded mb-4"></div>
+        <div className="space-y-3">
+          {[...Array(10)].map((_, i) => (
+            <div key={i} className="grid grid-cols-7 gap-4">
+              <div className="h-6 bg-soft-grey rounded col-span-1"></div>
+              <div className="h-6 bg-soft-grey rounded col-span-2"></div>
+              <div className="h-6 bg-soft-grey rounded col-span-1"></div>
+              <div className="h-6 bg-soft-grey rounded col-span-1"></div>
+              <div className="h-6 bg-soft-grey rounded col-span-1"></div>
+              <div className="h-6 bg-soft-grey rounded col-span-1"></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+// frontend/components/rankings/UniversityTable.tsx
+'use client';
+
+import React from 'react';
+import { University, FilterParams } from '@/types/university';
+import TableHeader from './TableHeader';
+import TableRow from './TableRow';
+import Pagination from './Pagination';
+import LoadingSkeleton from './LoadingSkeleton';
+
+interface UniversityTableProps {
+  universities: University[];
+  total: number;
+  loading: boolean;
+  error: string | null;
+  filters: FilterParams;
+  onSort: (field: NonNullable<FilterParams['sort_by']>) => void;
+  onPageChange: (page: number) => void;
+}
+
+export default function UniversityTable({
+  universities,
+  total,
+  loading,
+  error,
+  filters,
+  onSort,
+  onPageChange,
+}: UniversityTableProps) {
+  if (loading) return <LoadingSkeleton />;
+
+  if (error) {
+    return (
+      <div className="bg-coral/10 border border-coral text-coral p-6 rounded-xl text-center">
+        <p>Error loading universities: {error}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="mt-4 px-4 py-2 bg-turquoise text-white rounded-lg hover:bg-turquoise/80"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-md overflow-hidden border border-soft-grey">
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <TableHeader
+            sortBy={filters.sort_by}
+            sortOrder={filters.sort_order}
+            onSort={onSort}
+          />
+          <tbody>
+            {universities.map((uni) => (
+              <TableRow key={uni.id} university={uni} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {universities.length === 0 && !loading && (
+        <div className="text-center py-12 text-slate">
+          No universities match your filters.
+        </div>
+      )}
+
+      <div className="border-t border-soft-grey px-4 py-3">
+        <Pagination
+          currentPage={filters.page || 1}
+          pageSize={filters.page_size || 20}
+          total={total}
+          onPageChange={onPageChange}
+        />
+      </div>
+    </div>
+  );
+}
+// frontend/app/rankings/page.tsx
+'use client';
+
+import React, { useState, useCallback, useEffect } from 'react';
+import { useUniversities } from '@/hooks/useUniversities';
+import { FilterParams } from '@/types/university';
+import FilterBar from '@/components/rankings/FilterBar';
+import UniversityTable from '@/components/rankings/UniversityTable';
+
+export default function RankingsPage() {
+  const [filters, setFilters] = useState<FilterParams>({
+    page: 1,
+    page_size: 20,
+    sort_by: 'rank',
+    sort_order: 'asc',
+  });
+
+  const { universities, total, loading, error, regions, fetchUniversities } = useUniversities(filters);
+
+  const handleFilterChange = useCallback((newFilters: FilterParams) => {
+    // Reset to page 1 when filters change
+    setFilters({ ...newFilters, page: 1 });
+  }, []);
+
+  const handleSort = useCallback((field: NonNullable<FilterParams['sort_by']>) => {
+    setFilters((prev) => ({
+      ...prev,
+      sort_by: field,
+      sort_order: prev.sort_by === field && prev.sort_order === 'asc' ? 'desc' : 'asc',
+      page: 1,
+    }));
+  }, []);
+
+  const handlePageChange = useCallback((page: number) => {
+    setFilters((prev) => ({ ...prev, page }));
+  }, []);
+
+  // Trigger fetch when filters change
+  useEffect(() => {
+    fetchUniversities(filters);
+  }, [filters, fetchUniversities]);
+
+  return (
+    <div className="container mx-auto px-4 py-8">
+      {/* Page header */}
+      <div className="mb-8">
+        <h1 className="font-heading text-4xl text-navy mb-2">University Rankings 2026</h1>
+        <p className="text-lg text-slate">
+          Compare UK universities by financial return, composite score, and lifetime earnings.
+        </p>
+      </div>
+
+      {/* Filter bar */}
+      <FilterBar onFilterChange={handleFilterChange} regions={regions} currentFilters={filters} />
+
+      {/* Results summary */}
+      <div className="mb-4 text-sm text-slate">
+        Showing {universities.length} of {total} universities
+      </div>
+
+      {/* University table */}
+      <UniversityTable
+        universities={universities}
+        total={total}
+        loading={loading}
+        error={error}
+        filters={filters}
+        onSort={handleSort}
+        onPageChange={handlePageChange}
+      />
+    </div>
+  );
+}
+// frontend/tests/rankings.test.tsx
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import '@testing-library/jest-dom';
+import RankingsPage from '@/app/rankings/page';
+import { useUniversities } from '@/hooks/useUniversities';
+
+// Mock the hook
+jest.mock('@/hooks/useUniversities');
+const mockUseUniversities = useUniversities as jest.MockedFunction<typeof useUniversities>;
+
+const mockUniversities = [
+  {
+    id: 1,
+    rank: 1,
+    name: 'University of Oxford',
+    region: 'South East',
+    composite_score: 10.48,
+    pct_diff_from_median: 98.85,
+    roi_percent: 356.0,
+    lifetime_gain: 347100,
+    investment_2024: 93750,
+    description: null,
+  },
+  {
+    id: 2,
+    rank: 2,
+    name: 'University of Cambridge',
+    region: 'South East',
+    composite_score: 12.05,
+    pct_diff_from_median: 98.68,
+    roi_percent: 352.0,
+    lifetime_gain: 343200,
+    investment_2024: 93750,
+    description: null,
+  },
+];
+
+const mockRegions = ['South East', 'London', 'Scotland'];
+
+describe('RankingsPage', () => {
+  beforeEach(() => {
+    mockUseUniversities.mockReturnValue({
+      universities: mockUniversities,
+      total: 2,
+      loading: false,
+      error: null,
+      regions: mockRegions,
+      fetchUniversities: jest.fn(),
+      fetchRegions: jest.fn(),
+    });
+  });
+
+  it('renders the page title and filter bar', () => {
+    render(<RankingsPage />);
+    expect(screen.getByText('University Rankings 2026')).toBeInTheDocument();
+    expect(screen.getByLabelText('University name')).toBeInTheDocument();
+    expect(screen.getByLabelText('Region')).toBeInTheDocument();
+  });
+
+  it('displays universities in the table', () => {
+    render(<RankingsPage />);
+    expect(screen.getByText('University of Oxford')).toBeInTheDocument();
+    expect(screen.getByText('University of Cambridge')).toBeInTheDocument();
+    expect(screen.getByText('356%')).toBeInTheDocument();
+    expect(screen.getByText('£347,100')).toBeInTheDocument();
+  });
+
+  it('shows loading skeleton when loading', () => {
+    mockUseUniversities.mockReturnValueOnce({
+      universities: [],
+      total: 0,
+      loading: true,
+      error: null,
+      regions: [],
+      fetchUniversities: jest.fn(),
+      fetchRegions: jest.fn(),
+    });
+    render(<RankingsPage />);
+    expect(screen.getByTestId('loading-skeleton')).toBeInTheDocument();
+  });
+
+  it('shows error message on error', () => {
+    mockUseUniversities.mockReturnValueOnce({
+      universities: [],
+      total: 0,
+      loading: false,
+      error: 'Network error',
+      regions: [],
+      fetchUniversities: jest.fn(),
+      fetchRegions: jest.fn(),
+    });
+    render(<RankingsPage />);
+    expect(screen.getByText(/Error loading universities/i)).toBeInTheDocument();
+    expect(screen.getByText('Network error')).toBeInTheDocument();
+  });
+
+  it('calls onSort when header is clicked', async () => {
+    const fetchUniversitiesMock = jest.fn();
+    mockUseUniversities.mockReturnValue({
+      universities: mockUniversities,
+      total: 2,
+      loading: false,
+      error: null,
+      regions: mockRegions,
+      fetchUniversities: fetchUniversitiesMock,
+      fetchRegions: jest.fn(),
+    });
+
+    render(<RankingsPage />);
+    const rankHeader = screen.getByText('Rank');
+    await userEvent.click(rankHeader);
+
+    // Expect fetchUniversities to be called with updated sort
+    await waitFor(() => {
+      expect(fetchUniversitiesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sort_by: 'rank', sort_order: 'desc' })
+      );
+    });
+  });
+});
+# ediguide – University Rankings Module (Module 9)
+
+This module provides a fully functional university rankings page with:
+
+- Sortable table columns (rank, name, composite score, ROI %, lifetime gain)
+- Multi‑field filtering (name, region, ROI range, lifetime gain range)
+- Pagination
+- Responsive design following ediguide brand guidelines
+- Backend API with FastAPI and PostgreSQL
+- Unit tests for backend and frontend
+
+## Setup
+
+### Backend
+
+1. Create a PostgreSQL database (e.g., `ediguide`).
+2. Set `DATABASE_URL` environment variable.
+3. Run migrations:
+   ```bash
+   alembic upgrade head
+python -m backend.scripts.seed_universities
+uvicorn backend.app.main:app --reload
+npm run dev
+pytest backend/tests
+cd frontend && npm test

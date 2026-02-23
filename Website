@@ -7807,3 +7807,652 @@ const Footer = () => {
     </footer>
   );
 };
+import os
+from pydantic import BaseSettings
+from typing import Optional
+
+class Settings(BaseSettings):
+    # Application
+    APP_NAME: str = "ediguide"
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    DEBUG: bool = ENVIRONMENT == "development"
+
+    # Logging
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FORMAT: str = os.getenv("LOG_FORMAT", "json")  # "json" or "text"
+    LOG_OUTPUT: str = os.getenv("LOG_OUTPUT", "stdout")  # "stdout", "file", or "both"
+    LOG_FILE: str = os.getenv("LOG_FILE", "logs/app.log")
+
+    # Sentry
+    SENTRY_DSN: Optional[str] = os.getenv("SENTRY_DSN")
+    SENTRY_SAMPLE_RATE: float = float(os.getenv("SENTRY_SAMPLE_RATE", "1.0"))
+    SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
+
+    # Request ID
+    REQUEST_ID_HEADER: str = "X-Request-ID"
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+
+settings = Settings()
+import sys
+import json
+import logging
+from pathlib import Path
+from loguru import logger
+from .config import settings
+
+# Remove default loguru handler
+logger.remove()
+
+class JSONFormatter:
+    """Custom loguru formatter that outputs JSON lines."""
+    def __call__(self, record):
+        log_entry = {
+            "timestamp": record["time"].isoformat(),
+            "level": record["level"].name,
+            "module": record["module"],
+            "function": record["function"],
+            "line": record["line"],
+            "message": record["message"],
+        }
+        if record.get("exception"):
+            log_entry["exception"] = record["exception"].strip()
+        if record.get("extra"):
+            log_entry.update(record["extra"])
+        return json.dumps(log_entry) + "\n"
+
+def setup_logging():
+    """Configure loguru based on settings."""
+    log_format = settings.LOG_FORMAT
+    log_output = settings.LOG_OUTPUT
+    log_file = Path(settings.LOG_FILE)
+    log_level = settings.LOG_LEVEL.upper()
+
+    # Ensure log directory exists if logging to file
+    if log_output in ("file", "both") and log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Console sink
+    if log_output in ("stdout", "both"):
+        if log_format == "json":
+            logger.add(sys.stdout, format=JSONFormatter(), level=log_level, colorize=False)
+        else:
+            logger.add(
+                sys.stdout,
+                format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+                level=log_level,
+                colorize=True,
+            )
+
+    # File sink
+    if log_output in ("file", "both") and log_file:
+        if log_format == "json":
+            logger.add(str(log_file), format=JSONFormatter(), level=log_level, rotation="100 MB", retention="30 days")
+        else:
+            logger.add(
+                str(log_file),
+                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+                level=log_level,
+                rotation="100 MB",
+                retention="30 days",
+            )
+
+    # Intercept standard logging
+    class InterceptHandler(logging.Handler):
+        def emit(self, record):
+            # Get corresponding loguru level if it exists
+            try:
+                level = logger.level(record.levelname).name
+            except ValueError:
+                level = record.levelno
+            # Find caller from where the logged message originated
+            frame, depth = logging.currentframe(), 2
+            while frame.f_code.co_filename == logging.__file__:
+                frame = frame.f_back
+                depth += 1
+            logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+
+    logger.info("Logging configured", extra={"log_format": log_format, "log_output": log_output, "log_level": log_level})
+import sentry_sdk
+from sentry_sdk.integrations.asgi import SentryAsgiMiddleware
+from sentry_sdk.integrations.loguru import LoguruIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+from .config import settings
+from .logging import logger
+
+def setup_sentry(app):
+    """Initialize Sentry SDK for the FastAPI application."""
+    if not settings.SENTRY_DSN:
+        logger.warning("Sentry DSN not set – skipping Sentry initialization")
+        return
+
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.ENVIRONMENT,
+        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+        sample_rate=settings.SENTRY_SAMPLE_RATE,
+        integrations=[
+            LoguruIntegration(level=settings.LOG_LEVEL),
+            SqlalchemyIntegration(),
+        ],
+        send_default_pii=False,
+        request_bodies="always",
+        attach_stacktrace=True,
+    )
+
+    # Add ASGI middleware
+    app.add_middleware(SentryAsgiMiddleware)
+
+    logger.info("Sentry initialized", extra={"environment": settings.ENVIRONMENT})
+import uuid
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
+from starlette.requests import Request
+from starlette.responses import Response
+from ..core.config import settings
+
+REQUEST_ID_CTX_KEY = "request_id"
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Middleware that ensures every request has a unique ID and stores it in the request state."""
+
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next):
+        # Get request ID from header or generate one
+        request_id = request.headers.get(settings.REQUEST_ID_HEADER, str(uuid.uuid4()))
+        request.state.request_id = request_id
+
+        # Process the request
+        response: Response = await call_next(request)
+
+        # Add request ID to response headers
+        response.headers[settings.REQUEST_ID_HEADER] = request_id
+        return response
+import time
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+from ..core.logging import logger
+
+class LoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware for logging all requests and responses."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Start timer
+        start_time = time.time()
+
+        # Extract request details
+        method = request.method
+        url = str(request.url)
+        client_host = request.client.host if request.client else "unknown"
+        request_id = getattr(request.state, "request_id", "no-request-id")
+
+        # Log request (with level DEBUG to avoid cluttering production logs)
+        logger.debug(
+            f"Request started",
+            extra={
+                "request_id": request_id,
+                "method": method,
+                "url": url,
+                "client_host": client_host,
+            },
+        )
+
+        try:
+            response = await call_next(request)
+            process_time = time.time() - start_time
+            response.headers["X-Process-Time"] = str(process_time)
+
+            # Log response
+            logger.info(
+                f"Request completed",
+                extra={
+                    "request_id": request_id,
+                    "method": method,
+                    "url": url,
+                    "status_code": response.status_code,
+                    "process_time_sec": round(process_time, 4),
+                },
+            )
+            return response
+        except Exception as exc:
+            process_time = time.time() - start_time
+            logger.exception(
+                f"Request failed",
+                extra={
+                    "request_id": request_id,
+                    "method": method,
+                    "url": url,
+                    "process_time_sec": round(process_time, 4),
+                },
+            )
+            raise
+from fastapi import APIRouter, Response, status
+from sqlalchemy import text
+from ..core.logging import logger
+from ..db.session import SessionLocal
+
+router = APIRouter(prefix="/health", tags=["Health"])
+
+@router.get("/liveness")
+async def liveness():
+    """Kubernetes liveness probe – always returns 200 if the service is alive."""
+    return {"status": "alive"}
+
+@router.get("/readiness")
+async def readiness(response: Response):
+    """Kubernetes readiness probe – checks database connectivity."""
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        return {"status": "ready"}
+    except Exception as e:
+        logger.error(f"Readiness check failed: {e}")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "unavailable", "reason": str(e)}
+
+@router.get("/detailed")
+async def detailed_health():
+    """Detailed health check with component statuses."""
+    health_info = {
+        "app": settings.APP_NAME,
+        "environment": settings.ENVIRONMENT,
+        "components": {},
+    }
+
+    # Check database
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        health_info["components"]["database"] = "healthy"
+    except Exception as e:
+        health_info["components"]["database"] = f"unhealthy: {e}"
+
+    # Check Sentry if configured
+    if settings.SENTRY_DSN:
+        health_info["components"]["sentry"] = "configured"
+    else:
+        health_info["components"]["sentry"] = "not configured"
+
+    return health_info
+from fastapi import HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from ..core.logging import logger
+
+class AppException(HTTPException):
+    """Base application exception with optional details."""
+    def __init__(self, status_code: int, detail: str, error_code: str = None):
+        super().__init__(status_code=status_code, detail=detail)
+        self.error_code = error_code
+
+async def app_exception_handler(request: Request, exc: AppException):
+    """Custom handler for AppException."""
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.error(
+        f"AppException caught",
+        extra={
+            "request_id": request_id,
+            "status_code": exc.status_code,
+            "detail": exc.detail,
+            "error_code": exc.error_code,
+        },
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "error_code": exc.error_code,
+            "request_id": request_id,
+        },
+    )
+
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all for any unhandled exception."""
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.exception(
+        f"Unhandled exception",
+        extra={"request_id": request_id},
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "An internal server error occurred.",
+            "request_id": request_id,
+        },
+    )
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from .core.config import settings
+from .core.logging import setup_logging
+from .core.sentry import setup_sentry
+from .middleware.request_id import RequestIDMiddleware
+from .middleware.logging import LoggingMiddleware
+from .api.health import router as health_router
+from .core.exceptions import app_exception_handler, unhandled_exception_handler, AppException
+
+# Setup logging first
+setup_logging()
+
+# Create FastAPI app
+app = FastAPI(
+    title=settings.APP_NAME,
+    description="UK University ROI Index",
+    version="1.0.0",
+    debug=settings.DEBUG,
+)
+
+# Add Sentry (must be early)
+setup_sentry(app)
+
+# Add middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Adjust in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(LoggingMiddleware)
+
+# Register exception handlers
+app.add_exception_handler(AppException, app_exception_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)
+
+# Include routers
+app.include_router(health_router)
+
+@app.get("/")
+async def root():
+    return {"message": f"Welcome to {settings.APP_NAME}"}
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+sentry-sdk==1.38.0
+loguru==0.7.2
+pydantic==2.5.0
+python-dotenv==1.0.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+import * as Sentry from '@sentry/nextjs';
+import { env } from './env';
+
+export function initializeSentry() {
+  if (typeof window !== 'undefined') {
+    // Client-side
+    Sentry.init({
+      dsn: env.NEXT_PUBLIC_SENTRY_DSN,
+      environment: env.NEXT_PUBLIC_ENVIRONMENT || 'development',
+      tracesSampleRate: parseFloat(env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE || '0.1'),
+      integrations: [Sentry.browserTracingIntegration(), Sentry.replayIntegration()],
+      // Performance Monitoring
+      tracesSampler: (samplingContext) => {
+        // Ignore health checks and static assets
+        if (samplingContext.request?.url?.includes('/api/health')) {
+          return 0;
+        }
+        return 0.1;
+      },
+      // Session Replay
+      replaysSessionSampleRate: 0.1,
+      replaysOnErrorSampleRate: 1.0,
+    });
+  } else {
+    // Server-side
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      environment: env.ENVIRONMENT || 'development',
+      tracesSampleRate: parseFloat(env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
+    });
+  }
+
+  console.log(`Sentry initialized (${typeof window === 'undefined' ? 'server' : 'client'})`);
+}
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+interface LogEntry {
+  level: LogLevel;
+  message: string;
+  timestamp: string;
+  context?: Record<string, any>;
+  error?: Error;
+}
+
+class Logger {
+  private isDevelopment = process.env.NODE_ENV === 'development';
+
+  private log(level: LogLevel, message: string, context?: Record<string, any>, error?: Error) {
+    const entry: LogEntry = {
+      level,
+      message,
+      timestamp: new Date().toISOString(),
+      context,
+      error,
+    };
+
+    // In development, pretty-print to console
+    if (this.isDevelopment) {
+      const color = {
+        debug: '\x1b[36m', // cyan
+        info: '\x1b[32m',  // green
+        warn: '\x1b[33m',  // yellow
+        error: '\x1b[31m', // red
+      }[level];
+      const reset = '\x1b[0m';
+      console.log(`${color}[${level.toUpperCase()}]${reset}`, message, context || '', error || '');
+    } else {
+      // In production, log as JSON (can be picked up by log aggregators)
+      console.log(JSON.stringify(entry));
+    }
+
+    // Send errors to Sentry
+    if (level === 'error' && error) {
+      Sentry.captureException(error, { extra: context });
+    } else if (level === 'warn') {
+      Sentry.captureMessage(message, 'warning');
+    }
+  }
+
+  debug(message: string, context?: Record<string, any>) {
+    this.log('debug', message, context);
+  }
+
+  info(message: string, context?: Record<string, any>) {
+    this.log('info', message, context);
+  }
+
+  warn(message: string, context?: Record<string, any>) {
+    this.log('warn', message, context);
+  }
+
+  error(message: string, error?: Error, context?: Record<string, any>) {
+    this.log('error', message, context, error);
+  }
+}
+
+export const logger = new Logger();
+import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { logger } from '@/lib/logger';
+
+interface Props {
+  children: ReactNode;
+  fallback?: ReactNode;
+}
+
+interface State {
+  hasError: boolean;
+  error?: Error;
+}
+
+export class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    logger.error('React component error', error, { componentStack: errorInfo.componentStack });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+      return (
+        <div className="min-h-screen bg-off-white flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-lg p-8 max-w-md">
+            <h2 className="text-2xl font-heading text-deep-navy mb-4">Something went wrong</h2>
+            <p className="text-charcoal mb-6">
+              We're sorry, but an unexpected error occurred. Our team has been notified.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-turquoise text-white px-6 py-2 rounded-full hover:bg-opacity-90 transition"
+            >
+              Reload page
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+import type { AppProps } from 'next/app';
+import { useEffect } from 'react';
+import { initializeSentry } from '@/lib/sentry';
+import { logger } from '@/lib/logger';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import '@/styles/globals.css';
+
+function MyApp({ Component, pageProps }: AppProps) {
+  useEffect(() => {
+    // Initialize Sentry on client side
+    initializeSentry();
+
+    // Log page view
+    logger.info('Page viewed', { path: window.location.pathname });
+  }, []);
+
+  return (
+    <ErrorBoundary>
+      <Component {...pageProps} />
+    </ErrorBoundary>
+  );
+}
+
+export default MyApp;
+import NextErrorComponent, { ErrorProps } from 'next/error';
+import * as Sentry from '@sentry/nextjs';
+import { logger } from '@/lib/logger';
+import type { NextPageContext } from 'next';
+
+interface MyErrorProps extends ErrorProps {
+  hasGetInitialPropsRun?: boolean;
+  err?: Error;
+}
+
+function MyError({ statusCode, hasGetInitialPropsRun, err }: MyErrorProps) {
+  if (!hasGetInitialPropsRun && err) {
+    // getInitialProps is not called in case of https://github.com/vercel/next.js/issues/8592
+    // so we log it manually
+    logger.error('Error page', err);
+    Sentry.captureException(err);
+  }
+
+  return <NextErrorComponent statusCode={statusCode} />;
+}
+
+MyError.getInitialProps = async (context: NextPageContext) => {
+  const errorInitialProps = (await NextErrorComponent.getInitialProps(
+    context
+  )) as MyErrorProps;
+
+  // Workaround for https://github.com/vercel/next.js/issues/8592
+  errorInitialProps.hasGetInitialPropsRun = true;
+
+  if (context.err) {
+    logger.error('Error page getInitialProps', context.err);
+    Sentry.captureException(context.err);
+    await Sentry.flush(2000);
+  }
+
+  return errorInitialProps;
+};
+
+export default MyError;
+// next.config.js
+const { withSentryConfig } = require('@sentry/nextjs');
+
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  swcMinify: true,
+  images: {
+    domains: ['images.unsplash.com', 'pinterest.com'],
+  },
+  // Other Next.js config
+};
+
+const sentryWebpackPluginOptions = {
+  // Additional config options for the Sentry Webpack plugin
+  silent: true, // Suppresses all logs
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+};
+
+module.exports = withSentryConfig(nextConfig, sentryWebpackPluginOptions);
+# Sentry
+NEXT_PUBLIC_SENTRY_DSN=https://your-dsn.ingest.sentry.io/project
+SENTRY_DSN=https://your-dsn.ingest.sentry.io/project
+NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE=0.1
+SENTRY_TRACES_SAMPLE_RATE=0.1
+
+# Environment
+NEXT_PUBLIC_ENVIRONMENT=development
+ENVIRONMENT=development
+{
+  "dependencies": {
+    "@sentry/nextjs": "^7.80.0",
+    "next": "14.0.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  }
+}
+version: '3.8'
+services:
+  backend:
+    build: ./backend
+    environment:
+      - LOG_FORMAT=json
+      - LOG_OUTPUT=stdout
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build: ./frontend
+    environment:
+      - NEXT_PUBLIC_ENVIRONMENT=production
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

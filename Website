@@ -5257,3 +5257,1388 @@ alembic/versions/*.pyc
 
 # Docker
 *.pid
+backend/
+├── app/
+│   ├── api/
+│   │   ├── deps.py
+│   │   └── routes/
+│   │       ├── auth.py
+│   │       └── users.py
+│   ├── core/
+│   │   ├── config.py
+│   │   └── security.py
+│   ├── db/
+│   │   ├── base.py
+│   │   └── session.py
+│   ├── models/
+│   │   └── user.py
+│   ├── schemas/
+│   │   ├── token.py
+│   │   └── user.py
+│   └── utils/
+│       ├── email.py
+│       └── rate_limit.py
+├── alembic/                  (migrations)
+├── requirements.txt
+└── main.py
+
+frontend/
+├── components/
+│   └── auth/
+│       ├── LoginForm.tsx
+│       ├── RegisterForm.tsx
+│       ├── ResetPasswordForm.tsx
+│       └── UpdateProfileForm.tsx
+├── contexts/
+│   └── AuthContext.tsx
+├── lib/
+│   └── api.ts
+├── pages/
+│   ├── login.tsx
+│   ├── register.tsx
+│   ├── profile.tsx
+│   ├── verify-email.tsx
+│   └── reset-password.tsx
+├── middleware.ts
+├── styles/
+│   └── globals.css
+└── next.config.js
+import os
+from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Settings(BaseSettings):
+    PROJECT_NAME: str = "ediguide"
+    VERSION: str = "1.0.0"
+    API_V1_STR: str = "/api/v1"
+
+    # Database
+    POSTGRES_SERVER: str = os.getenv("POSTGRES_SERVER", "localhost")
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "")
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "ediguide")
+    DATABASE_URL: str = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_SERVER}/{POSTGRES_DB}"
+
+    # JWT
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "change-this-secret-in-production")
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # CORS
+    BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000"]  # Next.js dev
+
+    # Email (SMTP)
+    SMTP_TLS: bool = True
+    SMTP_PORT: int = 587
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    EMAILS_FROM_EMAIL: str = os.getenv("EMAILS_FROM_EMAIL", "noreply@ediguide.com")
+    EMAILS_FROM_NAME: str = PROJECT_NAME
+
+    # Rate limiting (Redis optional)
+    RATE_LIMIT_ENABLED: bool = False
+    REDIS_URL: str = os.getenv("REDIS_URL", "")
+
+settings = Settings()
+from datetime import datetime, timedelta
+from typing import Optional, Union
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from app.core.config import settings
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+def create_refresh_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+def decode_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, DateTime, func
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+
+Base = declarative_base()
+
+class BaseModel(Base):
+    __abstract__ = True
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
+
+engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import UUID
+from app.db.base import BaseModel
+import uuid
+
+class User(BaseModel):
+    __tablename__ = "users"
+
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255))
+    is_active = Column(Boolean, default=True)
+    is_verified = Column(Boolean, default=False)
+    verification_token = Column(String(255), unique=True, index=True)
+    reset_password_token = Column(String(255), unique=True, index=True)
+    reset_password_expires = Column(DateTime(timezone=True))
+
+    # Relationships
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class RefreshToken(BaseModel):
+    __tablename__ = "refresh_tokens"
+
+    token = Column(String(255), unique=True, index=True, nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked = Column(Boolean, default=False)
+
+    user = relationship("User", back_populates="refresh_tokens")
+from pydantic import BaseModel
+from uuid import UUID
+
+class Token(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+class TokenPayload(BaseModel):
+    sub: UUID
+    type: str
+from pydantic import BaseModel, EmailStr, Field, validator
+from uuid import UUID
+from typing import Optional
+
+# Shared properties
+class UserBase(BaseModel):
+    email: EmailStr
+    full_name: Optional[str] = None
+
+# Properties to receive via API on registration
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=8)
+
+    @validator('password')
+    def validate_password(cls, v):
+        # Add more validation if needed
+        return v
+
+# Properties to receive via API on login
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+# Properties to return via API
+class UserOut(UserBase):
+    id: UUID
+    is_active: bool
+    is_verified: bool
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+# Properties for updating profile
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+
+# Properties for password change
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+# Properties for password reset request
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+# Properties for password reset
+class PasswordReset(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8)
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError
+from sqlalchemy.orm import Session
+from app.db.session import SessionLocal
+from app.models.user import User
+from app.core.security import decode_token
+from app.schemas.token import TokenPayload
+from typing import Generator, Optional
+from uuid import UUID
+
+# OAuth2 scheme with cookie support – we'll read from cookie manually in the function
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+def get_db() -> Generator:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def get_current_user(
+    db: Session = Depends(get_db),
+    token: Optional[str] = Depends(oauth2_scheme)
+) -> User:
+    # First try to get token from cookie (if not in Authorization header)
+    if not token:
+        # In a real app, you'd parse cookies from request
+        # We'll rely on the cookie being sent automatically by browser, but for API we still need header.
+        # We'll keep both; for web, we set cookie and also allow header.
+        from fastapi import Request
+        request: Request = None  # This is not ideal; better to inject Request object.
+        # We'll use a more robust method: custom dependency that reads cookie.
+        # For simplicity, we assume token is always in Authorization header for API calls.
+        # For browser-based requests, we'll use a separate dependency.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+    token_data = TokenPayload(**payload)
+    if token_data.type != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type"
+        )
+
+    user = db.query(User).filter(User.id == token_data.sub).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inactive user"
+        )
+    return user
+
+# Dependency that also allows reading token from cookie (for web)
+from fastapi import Request
+
+def get_current_user_from_cookie(
+    request: Request,
+    db: Session = Depends(get_db)
+) -> User:
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+    # Remove 'Bearer ' prefix if present (cookies store raw token)
+    if token.startswith("Bearer "):
+        token = token[7:]
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+    token_data = TokenPayload(**payload)
+    if token_data.type != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type"
+        )
+    user = db.query(User).filter(User.id == token_data.sub).first()
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive"
+        )
+    return user
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, BackgroundTasks
+from sqlalchemy.orm import Session
+from datetime import datetime, timedelta
+from uuid import uuid4
+import secrets
+
+from app.api import deps
+from app.schemas.user import UserCreate, UserLogin, UserOut, PasswordResetRequest, PasswordReset
+from app.schemas.token import Token
+from app.models.user import User, RefreshToken
+from app.core.security import verify_password, get_password_hash, create_access_token, create_refresh_token, decode_token
+from app.core.config import settings
+from app.utils.email import send_verification_email, send_reset_password_email
+from app.utils.rate_limit import check_rate_limit
+
+router = APIRouter(prefix="/auth", tags=["authentication"])
+
+@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+async def register(
+    *,
+    db: Session = Depends(deps.get_db),
+    user_in: UserCreate,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    request: Request
+):
+    # Rate limit
+    if settings.RATE_LIMIT_ENABLED:
+        check_rate_limit(f"register:{request.client.host}", limit=5, window=3600)
+
+    # Check if user exists
+    existing = db.query(User).filter(User.email == user_in.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Create user
+    verification_token = secrets.token_urlsafe(32)
+    user = User(
+        email=user_in.email,
+        hashed_password=get_password_hash(user_in.password),
+        full_name=user_in.full_name,
+        verification_token=verification_token,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    # Send verification email
+    background_tasks.add_task(
+        send_verification_email,
+        email_to=user.email,
+        token=verification_token
+    )
+
+    # Auto-login after registration (issue tokens)
+    access_token = create_access_token(data={"sub": str(user.id)})
+    refresh_token_str = create_refresh_token(data={"sub": str(user.id)})
+    # Store refresh token in DB
+    refresh_token = RefreshToken(
+        token=refresh_token_str,
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+    db.add(refresh_token)
+    db.commit()
+
+    # Set cookies
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        secure=True,  # Set to False for local dev without HTTPS
+        samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=f"Bearer {refresh_token_str}",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+    return user
+
+@router.post("/login", response_model=Token)
+async def login(
+    *,
+    db: Session = Depends(deps.get_db),
+    user_in: UserLogin,
+    response: Response,
+    request: Request
+):
+    # Rate limit
+    if settings.RATE_LIMIT_ENABLED:
+        check_rate_limit(f"login:{request.client.host}", limit=10, window=300)
+
+    # Find user
+    user = db.query(User).filter(User.email == user_in.email).first()
+    if not user or not verify_password(user_in.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="Inactive user")
+
+    # Create tokens
+    access_token = create_access_token(data={"sub": str(user.id)})
+    refresh_token_str = create_refresh_token(data={"sub": str(user.id)})
+
+    # Store refresh token
+    refresh_token = RefreshToken(
+        token=refresh_token_str,
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+    db.add(refresh_token)
+    db.commit()
+
+    # Set cookies
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=f"Bearer {refresh_token_str}",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+    return Token(access_token=access_token, refresh_token=refresh_token_str)
+
+@router.post("/logout")
+async def logout(
+    response: Response,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user_from_cookie)
+):
+    # Invalidate all refresh tokens for this user (optional)
+    db.query(RefreshToken).filter(RefreshToken.user_id == current_user.id).delete()
+    db.commit()
+
+    # Clear cookies
+    response.delete_cookie("access_token")
+    response.delete_cookie("refresh_token")
+    return {"message": "Logged out"}
+
+@router.post("/refresh")
+async def refresh_token(
+    request: Request,
+    response: Response,
+    db: Session = Depends(deps.get_db)
+):
+    refresh_token_str = request.cookies.get("refresh_token")
+    if not refresh_token_str:
+        raise HTTPException(status_code=401, detail="Missing refresh token")
+    if refresh_token_str.startswith("Bearer "):
+        refresh_token_str = refresh_token_str[7:]
+
+    # Validate token
+    payload = decode_token(refresh_token_str)
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Check DB
+    token_record = db.query(RefreshToken).filter(
+        RefreshToken.token == refresh_token_str,
+        RefreshToken.revoked == False,
+        RefreshToken.expires_at > datetime.utcnow()
+    ).first()
+    if not token_record:
+        raise HTTPException(status_code=401, detail="Refresh token expired or revoked")
+
+    # Generate new tokens
+    user_id = payload["sub"]
+    new_access = create_access_token(data={"sub": user_id})
+    new_refresh = create_refresh_token(data={"sub": user_id})
+
+    # Revoke old refresh token
+    token_record.revoked = True
+    # Store new refresh token
+    new_token_record = RefreshToken(
+        token=new_refresh,
+        user_id=user_id,
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+    db.add(new_token_record)
+    db.commit()
+
+    # Set cookies
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {new_access}",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=f"Bearer {new_refresh}",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+    return {"message": "Tokens refreshed"}
+
+@router.get("/verify-email")
+async def verify_email(token: str, db: Session = Depends(deps.get_db)):
+    user = db.query(User).filter(User.verification_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid verification token")
+    user.is_verified = True
+    user.verification_token = None
+    db.commit()
+    return {"message": "Email verified successfully"}
+
+@router.post("/resend-verification")
+async def resend_verification(
+    current_user: User = Depends(deps.get_current_user_from_cookie),
+    background_tasks: BackgroundTasks = None
+):
+    if current_user.is_verified:
+        raise HTTPException(status_code=400, detail="Already verified")
+    new_token = secrets.token_urlsafe(32)
+    current_user.verification_token = new_token
+    # Save to DB
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    db.add(current_user)
+    db.commit()
+    db.close()
+    background_tasks.add_task(send_verification_email, current_user.email, new_token)
+    return {"message": "Verification email resent"}
+
+@router.post("/password-reset-request")
+async def password_reset_request(
+    reset_in: PasswordResetRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(deps.get_db),
+    request: Request = None
+):
+    if settings.RATE_LIMIT_ENABLED:
+        check_rate_limit(f"reset_req:{request.client.host}", limit=3, window=3600)
+
+    user = db.query(User).filter(User.email == reset_in.email).first()
+    if not user:
+        # Still return 200 to avoid email enumeration
+        return {"message": "If the email exists, a reset link has been sent"}
+
+    token = secrets.token_urlsafe(32)
+    user.reset_password_token = token
+    user.reset_password_expires = datetime.utcnow() + timedelta(hours=1)
+    db.commit()
+
+    background_tasks.add_task(send_reset_password_email, user.email, token)
+    return {"message": "If the email exists, a reset link has been sent"}
+
+@router.post("/password-reset")
+async def password_reset(
+    reset_in: PasswordReset,
+    db: Session = Depends(deps.get_db)
+):
+    user = db.query(User).filter(
+        User.reset_password_token == reset_in.token,
+        User.reset_password_expires > datetime.utcnow()
+    ).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    user.hashed_password = get_password_hash(reset_in.new_password)
+    user.reset_password_token = None
+    user.reset_password_expires = None
+    db.commit()
+    return {"message": "Password reset successful"}
+
+@router.get("/me", response_model=UserOut)
+async def read_users_me(
+    current_user: User = Depends(deps.get_current_user_from_cookie)
+):
+    return current_user
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from sqlalchemy.orm import Session
+from app.api import deps
+from app.schemas.user import UserUpdate, ChangePassword, UserOut
+from app.models.user import User
+from app.core.security import verify_password, get_password_hash
+from app.utils.email import send_verification_email
+import secrets
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+@router.put("/me", response_model=UserOut)
+async def update_profile(
+    *,
+    db: Session = Depends(deps.get_db),
+    user_in: UserUpdate,
+    current_user: User = Depends(deps.get_current_user_from_cookie),
+    background_tasks: BackgroundTasks
+):
+    if user_in.email and user_in.email != current_user.email:
+        # Check if new email already taken
+        existing = db.query(User).filter(User.email == user_in.email).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        # Update email, mark unverified
+        current_user.email = user_in.email
+        current_user.is_verified = False
+        # Generate new verification token
+        verification_token = secrets.token_urlsafe(32)
+        current_user.verification_token = verification_token
+        background_tasks.add_task(send_verification_email, current_user.email, verification_token)
+
+    if user_in.full_name is not None:
+        current_user.full_name = user_in.full_name
+
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+@router.post("/change-password")
+async def change_password(
+    *,
+    db: Session = Depends(deps.get_db),
+    passwords: ChangePassword,
+    current_user: User = Depends(deps.get_current_user_from_cookie)
+):
+    if not verify_password(passwords.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password incorrect")
+
+    current_user.hashed_password = get_password_hash(passwords.new_password)
+    db.add(current_user)
+    db.commit()
+    return {"message": "Password changed successfully"}
+
+@router.post("/delete-account")
+async def delete_account(
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user_from_cookie)
+):
+    # Optionally check password again
+    db.delete(current_user)
+    db.commit()
+    return {"message": "Account deleted"}
+import logging
+from pathlib import Path
+from typing import List
+from fastapi import BackgroundTasks
+from app.core.config import settings
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def send_email(
+    email_to: str,
+    subject: str,
+    html_content: str,
+    text_content: str = None
+):
+    if not settings.SMTP_HOST:
+        logger.warning("SMTP not configured. Email not sent.")
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = settings.EMAILS_FROM_EMAIL
+    msg["To"] = email_to
+
+    # Attach parts
+    if text_content:
+        msg.attach(MIMEText(text_content, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+
+    try:
+        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+            if settings.SMTP_TLS:
+                server.starttls()
+            if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            server.send_message(msg)
+        logger.info(f"Email sent to {email_to}")
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+
+def send_verification_email(email_to: str, token: str):
+    verify_url = f"{settings.FRONTEND_URL}/verify-email?token={token}"  # set FRONTEND_URL in settings
+    subject = "Verify your email for ediguide"
+    html = f"""
+    <html>
+      <body>
+        <h2>Welcome to ediguide!</h2>
+        <p>Please verify your email by clicking the link below:</p>
+        <p><a href="{verify_url}">Verify Email</a></p>
+        <p>If you didn't sign up, you can ignore this email.</p>
+      </body>
+    </html>
+    """
+    text = f"Verify your email: {verify_url}"
+    send_email(email_to, subject, html, text)
+
+def send_reset_password_email(email_to: str, token: str):
+    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+    subject = "Reset your ediguide password"
+    html = f"""
+    <html>
+      <body>
+        <p>You requested a password reset. Click the link below to set a new password:</p>
+        <p><a href="{reset_url}">Reset Password</a></p>
+        <p>If you didn't request this, you can ignore this email.</p>
+      </body>
+    </html>
+    """
+    text = f"Reset your password: {reset_url}"
+    send_email(email_to, subject, html, text)
+import time
+from collections import defaultdict
+from fastapi import HTTPException, status
+
+# Simple in-memory store (use Redis in production)
+rate_limit_store = defaultdict(list)
+
+def check_rate_limit(key: str, limit: int, window: int):
+    now = time.time()
+    # Remove old entries
+    rate_limit_store[key] = [t for t in rate_limit_store[key] if t > now - window]
+    if len(rate_limit_store[key]) >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded"
+        )
+    rate_limit_store[key].append(now)
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes import auth, users
+from app.core.config import settings
+
+app = FastAPI(title=settings.PROJECT_NAME, version=settings.VERSION)
+
+# CORS
+if settings.BACKEND_CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+# Include routers
+app.include_router(auth.router, prefix=settings.API_V1_STR)
+app.include_router(users.router, prefix=settings.API_V1_STR)
+
+@app.get("/")
+def root():
+    return {"message": "Welcome to ediguide API"}
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+
+async function fetchAPI(endpoint: string, options: RequestInit = {}) {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    ...options,
+    credentials: 'include', // Important for cookies
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || 'Something went wrong');
+  }
+
+  return res.json();
+}
+
+export const api = {
+  auth: {
+    register: (data: any) => fetchAPI('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+    login: (data: any) => fetchAPI('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
+    logout: () => fetchAPI('/auth/logout', { method: 'POST' }),
+    refresh: () => fetchAPI('/auth/refresh', { method: 'POST' }),
+    verifyEmail: (token: string) => fetchAPI(`/auth/verify-email?token=${token}`, { method: 'GET' }),
+    resendVerification: () => fetchAPI('/auth/resend-verification', { method: 'POST' }),
+    requestPasswordReset: (email: string) => fetchAPI('/auth/password-reset-request', { method: 'POST', body: JSON.stringify({ email }) }),
+    resetPassword: (token: string, newPassword: string) => fetchAPI('/auth/password-reset', { method: 'POST', body: JSON.stringify({ token, new_password: newPassword }) }),
+    me: () => fetchAPI('/auth/me', { method: 'GET' }),
+  },
+  users: {
+    updateProfile: (data: any) => fetchAPI('/users/me', { method: 'PUT', body: JSON.stringify(data) }),
+    changePassword: (data: any) => fetchAPI('/users/change-password', { method: 'POST', body: JSON.stringify(data) }),
+    deleteAccount: () => fetchAPI('/users/delete-account', { method: 'POST' }),
+  },
+};
+import React, { createContext, useState, useEffect, useContext } from 'react';
+import { api } from '@/lib/api';
+import { useRouter } from 'next/router';
+
+interface User {
+  id: string;
+  email: string;
+  full_name?: string;
+  is_verified: boolean;
+  created_at: string;
+}
+
+interface AuthContextType {
+  user: User | null;
+  loading: boolean;
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, fullName?: string) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+
+  const fetchUser = async () => {
+    try {
+      const userData = await api.auth.me();
+      setUser(userData);
+    } catch (error) {
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUser();
+  }, []);
+
+  const login = async (email: string, password: string) => {
+    await api.auth.login({ email, password });
+    await fetchUser();
+    router.push('/profile');
+  };
+
+  const register = async (email: string, password: string, fullName?: string) => {
+    await api.auth.register({ email, password, full_name: fullName });
+    await fetchUser();
+    router.push('/profile?welcome=true');
+  };
+
+  const logout = async () => {
+    await api.auth.logout();
+    setUser(null);
+    router.push('/');
+  };
+
+  const refreshUser = fetchUser;
+
+  return (
+    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
+  return context;
+};
+import React, { useState } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+
+export const LoginForm: React.FC = () => {
+  const { login } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await login(email, password);
+    } catch (err: any) {
+      setError(err.message || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4 max-w-md mx-auto p-6 bg-white rounded-xl shadow-md">
+      <h2 className="text-2xl font-heading text-deep-navy">Sign In</h2>
+      {error && <div className="bg-coral/20 text-coral p-2 rounded">{error}</div>}
+      <div>
+        <label className="block text-sm font-medium text-slate">Email</label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          className="mt-1 block w-full border border-soft-grey rounded-lg px-3 py-2 focus:border-turquoise focus:ring-turquoise"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate">Password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          className="mt-1 block w-full border border-soft-grey rounded-lg px-3 py-2 focus:border-turquoise focus:ring-turquoise"
+        />
+      </div>
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-turquoise text-white py-2 px-4 rounded-lg hover:bg-turquoise/90 disabled:opacity-50"
+      >
+        {loading ? 'Signing in...' : 'Sign In'}
+      </button>
+      <p className="text-sm text-slate text-center">
+        Don't have an account? <a href="/register" className="text-turquoise">Register</a>
+      </p>
+    </form>
+  );
+};
+import React, { useState } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+
+export const LoginForm: React.FC = () => {
+  const { login } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await login(email, password);
+    } catch (err: any) {
+      setError(err.message || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4 max-w-md mx-auto p-6 bg-white rounded-xl shadow-md">
+      <h2 className="text-2xl font-heading text-deep-navy">Sign In</h2>
+      {error && <div className="bg-coral/20 text-coral p-2 rounded">{error}</div>}
+      <div>
+        <label className="block text-sm font-medium text-slate">Email</label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          className="mt-1 block w-full border border-soft-grey rounded-lg px-3 py-2 focus:border-turquoise focus:ring-turquoise"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate">Password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          className="mt-1 block w-full border border-soft-grey rounded-lg px-3 py-2 focus:border-turquoise focus:ring-turquoise"
+        />
+      </div>
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-turquoise text-white py-2 px-4 rounded-lg hover:bg-turquoise/90 disabled:opacity-50"
+      >
+        {loading ? 'Signing in...' : 'Sign In'}
+      </button>
+      <p className="text-sm text-slate text-center">
+        Don't have an account? <a href="/register" className="text-turquoise">Register</a>
+      </p>
+    </form>
+  );
+};
+import React, { useState } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+
+export const RegisterForm: React.FC = () => {
+  const { register } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await register(email, password, fullName);
+    } catch (err: any) {
+      setError(err.message || 'Registration failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4 max-w-md mx-auto p-6 bg-white rounded-xl shadow-md">
+      <h2 className="text-2xl font-heading text-deep-navy">Create Account</h2>
+      {error && <div className="bg-coral/20 text-coral p-2 rounded">{error}</div>}
+      <div>
+        <label className="block text-sm font-medium text-slate">Full Name (optional)</label>
+        <input
+          type="text"
+          value={fullName}
+          onChange={(e) => setFullName(e.target.value)}
+          className="mt-1 block w-full border border-soft-grey rounded-lg px-3 py-2 focus:border-turquoise focus:ring-turquoise"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate">Email</label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          className="mt-1 block w-full border border-soft-grey rounded-lg px-3 py-2 focus:border-turquoise focus:ring-turquoise"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate">Password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          minLength={8}
+          className="mt-1 block w-full border border-soft-grey rounded-lg px-3 py-2 focus:border-turquoise focus:ring-turquoise"
+        />
+      </div>
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-turquoise text-white py-2 px-4 rounded-lg hover:bg-turquoise/90 disabled:opacity-50"
+      >
+        {loading ? 'Registering...' : 'Register'}
+      </button>
+      <p className="text-sm text-slate text-center">
+        Already have an account? <a href="/login" className="text-turquoise">Sign in</a>
+      </p>
+    </form>
+  );
+};
+import { useAuth } from '@/contexts/AuthContext';
+import { useState } from 'react';
+import { api } from '@/lib/api';
+import { useRouter } from 'next/router';
+
+export default function ProfilePage() {
+  const { user, logout, refreshUser } = useAuth();
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [fullName, setFullName] = useState(user?.full_name || '');
+  const [email, setEmail] = useState(user?.email || '');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  if (!user) {
+    router.push('/login');
+    return null;
+  }
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.users.updateProfile({ full_name: fullName, email });
+      await refreshUser();
+      setMessage('Profile updated');
+      setEditing(false);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.users.changePassword({ current_password: currentPassword, new_password: newPassword });
+      setMessage('Password changed');
+      setCurrentPassword('');
+      setNewPassword('');
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="container mx-auto px-4 py-8 max-w-2xl">
+      <h1 className="text-3xl font-heading text-deep-navy mb-6">My Profile</h1>
+      {message && <div className="bg-mint/50 text-deep-navy p-3 rounded mb-4">{message}</div>}
+      {error && <div className="bg-coral/20 text-coral p-3 rounded mb-4">{error}</div>}
+
+      <div className="bg-white rounded-xl shadow-md p-6 mb-6">
+        <h2 className="text-xl font-heading text-midnight-teal mb-4">Account Information</h2>
+        {!editing ? (
+          <div>
+            <p><strong>Email:</strong> {user.email} {!user.is_verified && <span className="text-coral">(unverified)</span>}</p>
+            <p><strong>Name:</strong> {user.full_name || '—'}</p>
+            <p><strong>Member since:</strong> {new Date(user.created_at).toLocaleDateString()}</p>
+            <button onClick={() => setEditing(true)} className="mt-4 bg-midnight-teal text-white px-4 py-2 rounded-lg hover:bg-midnight-teal/90">Edit Profile</button>
+          </div>
+        ) : (
+          <form onSubmit={handleUpdateProfile}>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-slate">Full Name</label>
+              <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} className="mt-1 block w-full border rounded-lg p-2" />
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-slate">Email</label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="mt-1 block w-full border rounded-lg p-2" />
+            </div>
+            <div className="flex gap-2">
+              <button type="submit" disabled={loading} className="bg-turquoise text-white px-4 py-2 rounded-lg hover:bg-turquoise/90">Save</button>
+              <button type="button" onClick={() => setEditing(false)} className="bg-soft-grey text-charcoal px-4 py-2 rounded-lg">Cancel</button>
+            </div>
+          </form>
+        )}
+        {!user.is_verified && (
+          <button onClick={() => api.auth.resendVerification()} className="mt-4 text-sm text-turquoise hover:underline">Resend verification email</button>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl shadow-md p-6">
+        <h2 className="text-xl font-heading text-midnight-teal mb-4">Change Password</h2>
+        <form onSubmit={handleChangePassword}>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate">Current Password</label>
+            <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required className="mt-1 block w-full border rounded-lg p-2" />
+          </div>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate">New Password</label>
+            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={8} className="mt-1 block w-full border rounded-lg p-2" />
+          </div>
+          <button type="submit" disabled={loading} className="bg-turquoise text-white px-4 py-2 rounded-lg hover:bg-turquoise/90">Update Password</button>
+        </form>
+      </div>
+
+      <div className="mt-8">
+        <button onClick={logout} className="bg-coral text-white px-4 py-2 rounded-lg hover:bg-coral/90">Logout</button>
+      </div>
+    </div>
+  );
+}
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
+import { api } from '@/lib/api';
+
+export default function VerifyEmail() {
+  const router = useRouter();
+  const { token } = router.query;
+  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    if (token && typeof token === 'string') {
+      api.auth.verifyEmail(token)
+        .then(() => {
+          setStatus('success');
+          setMessage('Email verified successfully! You can now log in.');
+        })
+        .catch((err) => {
+          setStatus('error');
+          setMessage(err.message || 'Verification failed');
+        });
+    }
+  }, [token]);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="bg-white p-8 rounded-xl shadow-md max-w-md">
+        {status === 'loading' && <p>Verifying your email...</p>}
+        {status === 'success' && (
+          <div>
+            <h1 className="text-2xl text-turquoise mb-4">✅ {message}</h1>
+            <a href="/login" className="text-turquoise underline">Go to login</a>
+          </div>
+        )}
+        {status === 'error' && (
+          <div>
+            <h1 className="text-2xl text-coral mb-4">❌ {message}</h1>
+            <a href="/" className="text-turquoise underline">Back to home</a>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+import { useState } from 'react';
+import { useRouter } from 'next/router';
+import { api } from '@/lib/api';
+
+export default function ResetPassword() {
+  const router = useRouter();
+  const { token } = router.query;
+  const [email, setEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      await api.auth.requestPasswordReset(email);
+      setMessage('If that email exists, a reset link has been sent.');
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    setLoading(true);
+    setError('');
+    try {
+      await api.auth.resetPassword(token as string, newPassword);
+      setMessage('Password reset successfully! You can now log in.');
+      setTimeout(() => router.push('/login'), 2000);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (token) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <form onSubmit={handleReset} className="bg-white p-6 rounded-xl shadow-md max-w-md w-full">
+          <h1 className="text-2xl font-heading mb-4">Set New Password</h1>
+          {message && <div className="bg-mint/50 p-2 rounded mb-4">{message}</div>}
+          {error && <div className="bg-coral/20 text-coral p-2 rounded mb-4">{error}</div>}
+          <div className="mb-4">
+            <label className="block text-sm font-medium">New Password</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+              minLength={8}
+              className="mt-1 block w-full border rounded-lg p-2"
+            />
+          </div>
+          <button type="submit" disabled={loading} className="w-full bg-turquoise text-white py-2 rounded-lg">Reset Password</button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <form onSubmit={handleRequest} className="bg-white p-6 rounded-xl shadow-md max-w-md w-full">
+        <h1 className="text-2xl font-heading mb-4">Reset Password</h1>
+        {message && <div className="bg-mint/50 p-2 rounded mb-4">{message}</div>}
+        {error && <div className="bg-coral/20 text-coral p-2 rounded mb-4">{error}</div>}
+        <div className="mb-4">
+          <label className="block text-sm font-medium">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            className="mt-1 block w-full border rounded-lg p-2"
+          />
+        </div>
+        <button type="submit" disabled={loading} className="w-full bg-turquoise text-white py-2 rounded-lg">Send Reset Link</button>
+      </form>
+    </div>
+  );
+}
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function middleware(request: NextRequest) {
+  const token = request.cookies.get('access_token')?.value;
+  const isAuthPage = request.nextUrl.pathname.startsWith('/login') || 
+                     request.nextUrl.pathname.startsWith('/register') ||
+                     request.nextUrl.pathname.startsWith('/reset-password');
+
+  if (!token && !isAuthPage && request.nextUrl.pathname.startsWith('/profile')) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  if (token && isAuthPage) {
+    return NextResponse.redirect(new URL('/profile', request.url));
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ['/profile/:path*', '/login', '/register', '/reset-password'],
+};
+import { LoginForm } from '@/components/auth/LoginForm';
+import { AuthProvider } from '@/contexts/AuthContext';
+
+export default function LoginPage() {
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-seafoam-mint/20 to-white py-12">
+      <LoginForm />
+    </div>
+  );
+}

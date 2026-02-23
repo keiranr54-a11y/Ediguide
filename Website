@@ -9701,3 +9701,585 @@ uvicorn backend.app.main:app --reload
 npm run dev
 pytest backend/tests
 cd frontend && npm test
+ediguide/
+├── app/
+│   └── subjects/
+│       └── page.jsx                # Main page (server component)
+├── components/
+│   ├── SubjectTable.jsx            # Sortable/filterable table
+│   ├── EarningsChart.jsx           # D3 line chart with trajectory
+│   ├── ChartControls.jsx           # Degree level selector
+│   └── ui/
+│       ├── Card.jsx                 # Reusable card
+│       ├── Badge.jsx                 # ROI badge
+│       └── Spinner.jsx               # Loading indicator
+├── lib/
+│   ├── subjectData.js               # Static subject dataset + helpers
+│   ├── roiCalculations.js            # NPV, payback, trajectory generation
+│   └── utils.js                      # Formatting, sorting
+├── public/
+│   └── fonts/                        # (if using local fonts)
+└── styles/
+    └── globals.css                    # Tailwind + D3 overrides
+// app/subjects/SubjectAnalysisClient.jsx
+'use client';
+
+import { useState, useMemo } from 'react';
+import SubjectTable from '@/components/SubjectTable';
+import EarningsChart from '@/components/EarningsChart';
+import ChartControls from '@/components/ChartControls';
+import { generateEarningsTrajectory } from '@/lib/roiCalculations';
+import { sortSubjects } from '@/lib/utils';
+
+export default function SubjectAnalysisClient({ initialSubjects }) {
+  const [selectedSubject, setSelectedSubject] = useState(initialSubjects[0]); // default first
+  const [degreeLevel, setDegreeLevel] = useState('undergraduate'); // 'undergraduate', 'master', 'doctorate'
+  const [sortConfig, setSortConfig] = useState({ key: 'roiUndergrad', direction: 'desc' });
+
+  // Sort subjects based on current config
+  const sortedSubjects = useMemo(() => {
+    return sortSubjects(initialSubjects, sortConfig.key, sortConfig.direction);
+  }, [initialSubjects, sortConfig]);
+
+  // Generate trajectory data for the selected subject and level
+  const trajectory = useMemo(() => {
+    return generateEarningsTrajectory(selectedSubject, degreeLevel);
+  }, [selectedSubject, degreeLevel]);
+
+  const handleSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left column: table */}
+        <div className="lg:col-span-2">
+          <SubjectTable
+            subjects={sortedSubjects}
+            selectedSubject={selectedSubject}
+            onSelectSubject={setSelectedSubject}
+            onSort={handleSort}
+            sortConfig={sortConfig}
+          />
+        </div>
+
+        {/* Right column: chart + controls */}
+        <div className="lg:col-span-1 space-y-6">
+          <ChartControls
+            degreeLevel={degreeLevel}
+            onDegreeLevelChange={setDegreeLevel}
+          />
+          <EarningsChart
+            trajectory={trajectory}
+            subjectName={selectedSubject.name}
+            degreeLevel={degreeLevel}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+// components/SubjectTable.jsx
+'use client';
+
+import { useState } from 'react';
+import { formatRoi, formatCurrency } from '@/lib/utils';
+import Badge from './ui/Badge';
+
+const columns = [
+  { key: 'name', label: 'Subject', sortable: true },
+  { key: 'roiUndergrad', label: 'Undergrad ROI', sortable: true },
+  { key: 'roiMaster', label: "Master's ROI", sortable: true },
+  { key: 'roiDoctorate', label: 'Doctorate ROI', sortable: true },
+  { key: 'lifetimeValue', label: 'Lifetime £', sortable: true },
+];
+
+export default function SubjectTable({
+  subjects,
+  selectedSubject,
+  onSelectSubject,
+  onSort,
+  sortConfig,
+}) {
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const filteredSubjects = subjects.filter((s) =>
+    s.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const getSortIcon = (key) => {
+    if (sortConfig.key !== key) return '↕️';
+    return sortConfig.direction === 'asc' ? '↑' : '↓';
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-md p-6">
+      <div className="mb-4">
+        <input
+          type="text"
+          placeholder="Search subjects..."
+          className="w-full px-4 py-2 border border-soft-grey rounded-lg focus:outline-none focus:border-turquoise"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-soft-grey">
+              {columns.map((col) => (
+                <th
+                  key={col.key}
+                  className={`py-3 px-2 text-left font-body font-medium text-slate ${
+                    col.sortable ? 'cursor-pointer hover:text-deep-navy' : ''
+                  }`}
+                  onClick={() => col.sortable && onSort(col.key)}
+                >
+                  <span className="flex items-center gap-1">
+                    {col.label}
+                    {col.sortable && (
+                      <span className="text-xs opacity-60">
+                        {getSortIcon(col.key)}
+                      </span>
+                    )}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filteredSubjects.map((subject) => (
+              <tr
+                key={subject.id}
+                className={`border-b border-soft-grey/50 hover:bg-mint/10 cursor-pointer transition-colors ${
+                  selectedSubject.id === subject.id ? 'bg-mint/20' : ''
+                }`}
+                onClick={() => onSelectSubject(subject)}
+              >
+                <td className="py-3 px-2 font-body text-charcoal">
+                  {subject.name}
+                </td>
+                <td className="py-3 px-2 font-mono text-turquoise">
+                  <Badge value={subject.roiUndergrad} type="roi" />
+                </td>
+                <td className="py-3 px-2 font-mono text-turquoise">
+                  <Badge value={subject.roiMaster} type="roi" />
+                </td>
+                <td className="py-3 px-2 font-mono text-turquoise">
+                  <Badge value={subject.roiDoctorate} type="roi" />
+                </td>
+                <td className="py-3 px-2 font-mono text-deep-navy">
+                  {formatCurrency(subject.lifetimeValue)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {filteredSubjects.length === 0 && (
+        <p className="text-center py-8 text-slate">No subjects found.</p>
+      )}
+    </div>
+  );
+}
+// components/ui/Badge.jsx
+export default function Badge({ value, type = 'roi' }) {
+  const isNegative = value < 0;
+  const formatted = type === 'roi' ? `${value}%` : `£${value}`;
+
+  const colorClasses = isNegative
+    ? 'bg-coral-kiss/20 text-coral-kiss'
+    : 'bg-mint/30 text-turquoise';
+
+  return (
+    <span className={`inline-block px-2 py-1 rounded-full text-xs font-mono ${colorClasses}`}>
+      {formatted}
+    </span>
+  );
+}
+// components/ChartControls.jsx
+'use client';
+
+const levels = [
+  { value: 'undergraduate', label: 'Undergraduate' },
+  { value: 'master', label: "Master's" },
+  { value: 'doctorate', label: 'Doctorate' },
+];
+
+export default function ChartControls({ degreeLevel, onDegreeLevelChange }) {
+  return (
+    <div className="bg-white rounded-xl shadow-md p-6">
+      <h3 className="font-heading text-xl text-deep-navy mb-4">Degree Level</h3>
+      <div className="flex gap-3">
+        {levels.map((level) => (
+          <button
+            key={level.value}
+            className={`px-4 py-2 rounded-full font-body text-sm transition-all ${
+              degreeLevel === level.value
+                ? 'bg-turquoise text-white shadow-md'
+                : 'bg-soft-grey text-slate hover:bg-mint'
+            }`}
+            onClick={() => onDegreeLevelChange(level.value)}
+          >
+            {level.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+// components/EarningsChart.jsx
+'use client';
+
+import { useEffect, useRef } from 'react';
+import * as d3 from 'd3';
+
+export default function EarningsChart({ trajectory, subjectName, degreeLevel }) {
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!trajectory || trajectory.length === 0) return;
+
+    // Clear previous chart
+    d3.select(chartRef.current).selectAll('*').remove();
+
+    // Set dimensions
+    const width = chartRef.current.clientWidth;
+    const height = 300;
+    const margin = { top: 20, right: 30, bottom: 40, left: 50 };
+
+    const innerWidth = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+
+    // Create SVG
+    const svg = d3
+      .select(chartRef.current)
+      .append('svg')
+      .attr('width', width)
+      .attr('height', height)
+      .append('g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+    // Scales
+    const xScale = d3
+      .scaleLinear()
+      .domain([0, trajectory.length - 1])
+      .range([0, innerWidth]);
+
+    const yScale = d3
+      .scaleLinear()
+      .domain([0, d3.max(trajectory, (d) => d.earnings) * 1.1])
+      .range([innerHeight, 0]);
+
+    // Line generator
+    const line = d3
+      .line()
+      .x((d, i) => xScale(i))
+      .y((d) => yScale(d.earnings))
+      .curve(d3.curveMonotoneX);
+
+    // Add line path
+    svg
+      .append('path')
+      .datum(trajectory)
+      .attr('fill', 'none')
+      .attr('stroke', '#2AC3B4')
+      .attr('stroke-width', 3)
+      .attr('d', line);
+
+    // Add dots
+    svg
+      .selectAll('.dot')
+      .data(trajectory)
+      .enter()
+      .append('circle')
+      .attr('cx', (d, i) => xScale(i))
+      .attr('cy', (d) => yScale(d.earnings))
+      .attr('r', 4)
+      .attr('fill', '#0B2D4A')
+      .attr('stroke', 'white')
+      .attr('stroke-width', 2)
+      .on('mouseover', function (event, d) {
+        d3.select(this).attr('r', 6).attr('fill', '#FFB347');
+        tooltip.style('opacity', 1)
+          .html(`Year ${d.year}: £${d.earnings.toLocaleString()}`)
+          .style('left', (event.pageX + 10) + 'px')
+          .style('top', (event.pageY - 30) + 'px');
+      })
+      .on('mouseout', function () {
+        d3.select(this).attr('r', 4).attr('fill', '#0B2D4A');
+        tooltip.style('opacity', 0);
+      });
+
+    // Axes
+    svg
+      .append('g')
+      .attr('transform', `translate(0,${innerHeight})`)
+      .call(d3.axisBottom(xScale).tickFormat((d) => d));
+
+    svg.append('g').call(d3.axisLeft(yScale).tickFormat((d) => `£${d / 1000}k`));
+
+    // Labels
+    svg
+      .append('text')
+      .attr('x', innerWidth / 2)
+      .attr('y', innerHeight + margin.bottom - 5)
+      .attr('text-anchor', 'middle')
+      .attr('class', 'text-xs fill-slate')
+      .text('Years after graduation');
+
+    svg
+      .append('text')
+      .attr('x', -30)
+      .attr('y', 10)
+      .attr('text-anchor', 'middle')
+      .attr('transform', 'rotate(-90)')
+      .attr('class', 'text-xs fill-slate')
+      .text('Annual earnings (£)');
+
+    // Tooltip
+    const tooltip = d3.select('body')
+      .append('div')
+      .attr('class', 'absolute bg-white p-2 rounded shadow-lg text-sm font-mono pointer-events-none opacity-0 transition-opacity')
+      .style('z-index', 100);
+
+    return () => {
+      tooltip.remove();
+    };
+  }, [trajectory]);
+
+  return (
+    <div className="bg-white rounded-xl shadow-md p-6">
+      <h3 className="font-heading text-xl text-deep-navy mb-2">
+        {subjectName} – {degreeLevel} trajectory
+      </h3>
+      <p className="text-sm text-slate mb-4">Projected annual earnings over 40-year career</p>
+      <div ref={chartRef} className="w-full h-[300px]" />
+    </div>
+  );
+}
+// lib/subjectData.js
+export const subjects = [
+  {
+    id: 1,
+    name: 'Medicine',
+    roiUndergrad: 567,
+    roiMaster: 642,
+    roiDoctorate: 710,
+    lifetimeValue: 1520000,
+    trajectoryBase: 55000, // starting salary
+  },
+  {
+    id: 2,
+    name: 'Dentistry',
+    roiUndergrad: 542,
+    roiMaster: 600,
+    roiDoctorate: 650,
+    lifetimeValue: 1430000,
+    trajectoryBase: 52000,
+  },
+  {
+    id: 3,
+    name: 'Veterinary Science',
+    roiUndergrad: 516,
+    roiMaster: 578,
+    roiDoctorate: 630,
+    lifetimeValue: 1320000,
+    trajectoryBase: 48000,
+  },
+  {
+    id: 4,
+    name: 'Economics',
+    roiUndergrad: 464,
+    roiMaster: 612,
+    roiDoctorate: 688,
+    lifetimeValue: 1210000,
+    trajectoryBase: 45000,
+  },
+  {
+    id: 5,
+    name: 'General Engineering',
+    roiUndergrad: 440,
+    roiMaster: 521,
+    roiDoctorate: 570,
+    lifetimeValue: 1100000,
+    trajectoryBase: 42000,
+  },
+  // ... (remaining 55 subjects follow same pattern)
+];
+
+export async function getSubjects() {
+  // In real app, this could fetch from API/db
+  return subjects;
+}
+// lib/roiCalculations.js
+export function generateEarningsTrajectory(subject, level) {
+  const baseSalary = subject.trajectoryBase || 25000;
+  const years = 40;
+  const trajectory = [];
+
+  // Adjust growth based on degree level
+  let growthFactor = 1.0;
+  if (level === 'master') growthFactor = 1.2;
+  if (level === 'doctorate') growthFactor = 1.4;
+
+  for (let year = 0; year < years; year++) {
+    // Simple career progression: sigmoid-like curve
+    let multiplier;
+    if (year < 5) multiplier = 0.8 + year * 0.1;
+    else if (year < 15) multiplier = 1.3 + (year - 5) * 0.05;
+    else if (year < 30) multiplier = 2.0 + (year - 15) * 0.03;
+    else multiplier = 2.5 - (year - 30) * 0.03;
+
+    // Add some randomness
+    const randomFactor = 0.95 + Math.random() * 0.1;
+
+    const earnings = baseSalary * multiplier * growthFactor * randomFactor;
+    trajectory.push({
+      year,
+      earnings: Math.round(earnings),
+    });
+  }
+  return trajectory;
+}
+
+export function calculateNPV(earningsArray, discountRate = 0.035) {
+  return earningsArray.reduce((acc, val, i) => {
+    return acc + val / Math.pow(1 + discountRate, i);
+  }, 0);
+}
+
+export function calculatePaybackPeriod(investment, earningsStream) {
+  let cumulative = 0;
+  for (let i = 0; i < earningsStream.length; i++) {
+    cumulative += earningsStream[i];
+    if (cumulative >= investment) return i + 1;
+  }
+  return null;
+}
+// lib/utils.js
+export function formatRoi(value) {
+  return `${value > 0 ? '+' : ''}${value}%`;
+}
+
+export function formatCurrency(value) {
+  return new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: 'GBP',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+export function sortSubjects(subjects, key, direction) {
+  return [...subjects].sort((a, b) => {
+    let aVal = a[key];
+    let bVal = b[key];
+    if (typeof aVal === 'string') {
+      aVal = aVal.toLowerCase();
+      bVal = bVal.toLowerCase();
+    }
+    if (aVal < bVal) return direction === 'asc' ? -1 : 1;
+    if (aVal > bVal) return direction === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+// components/ui/Card.jsx
+export default function Card({ children, className = '' }) {
+  return (
+    <div className={`bg-white rounded-xl shadow-md p-6 ${className}`}>
+      {children}
+    </div>
+  );
+}
+// components/ui/Spinner.jsx
+export default function Spinner() {
+  return (
+    <div className="flex justify-center items-center">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-turquoise"></div>
+    </div>
+  );
+}
+/* styles/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --deep-navy: #0B2D4A;
+    --midnight-teal: #1A5F6B;
+    --turquoise: #2AC3B4;
+    --caribbean-cyan: #6CD4C9;
+    --mint: #B8E6DE;
+    --off-white: #F9FBFD;
+    --soft-grey: #E5E9F0;
+    --slate: #5A6874;
+    --charcoal: #1E2A36;
+    --coral-kiss: #FFC4B3;
+  }
+
+  .font-heading {
+    font-family: 'Playfair Display', serif;
+  }
+  .font-body {
+    font-family: 'Inter', sans-serif;
+  }
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* D3 tooltip */
+.d3-tooltip {
+  @apply absolute bg-white p-2 rounded shadow-lg text-sm font-mono pointer-events-none opacity-0 transition-opacity;
+  z-index: 100;
+}
+// tailwind.config.js
+module.exports = {
+  content: [
+    './app/**/*.{js,ts,jsx,tsx}',
+    './components/**/*.{js,ts,jsx,tsx}',
+  ],
+  theme: {
+    extend: {
+      colors: {
+        'deep-navy': '#0B2D4A',
+        'midnight-teal': '#1A5F6B',
+        'turquoise': '#2AC3B4',
+        'caribbean-cyan': '#6CD4C9',
+        'mint': '#B8E6DE',
+        'off-white': '#F9FBFD',
+        'soft-grey': '#E5E9F0',
+        'slate': '#5A6874',
+        'charcoal': '#1E2A36',
+        'coral-kiss': '#FFC4B3',
+      },
+      fontFamily: {
+        heading: ['Playfair Display', 'serif'],
+        body: ['Inter', 'sans-serif'],
+        mono: ['JetBrains Mono', 'monospace'],
+      },
+      backgroundImage: {
+        'ocean-sunrise': 'linear-gradient(135deg, #0B2D4A 0%, #1A5F6B 50%, #2AC3B4 100%)',
+      },
+    },
+  },
+  plugins: [],
+};
+{
+  "dependencies": {
+    "next": "14.x",
+    "react": "18.x",
+    "react-dom": "18.x",
+    "d3": "^7.8.5",
+    "tailwindcss": "^3.4.0"
+  }
+}

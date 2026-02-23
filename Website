@@ -10283,3 +10283,1054 @@ module.exports = {
     "tailwindcss": "^3.4.0"
   }
 }
+components/roi-calculator/
+├── index.tsx                 # Main ROICalculator component
+├── types.ts                   # TypeScript interfaces
+├── constants.ts               # Mock data (universities, subjects, regions)
+├── utils/
+│   └── validation.ts          # Step‑by‑step validation functions
+├── hooks/
+│   └── useROIForm.ts          # Custom hook for form state & logic
+├── steps/
+│   ├── UniversityStep.tsx
+│   ├── SubjectStep.tsx
+│   ├── DegreeLevelStep.tsx
+│   ├── ResidencyStep.tsx
+│   └── FundingStep.tsx
+├── components/
+│   ├── ProgressIndicator.tsx
+│   ├── FormNavigation.tsx
+│   ├── InputField.tsx
+│   └── SelectField.tsx
+export type DegreeLevel = 'bachelors' | 'masters' | 'phd';
+export type ResidencyStatus = 'home' | 'international';
+export type FundingSource = 'loans' | 'scholarships' | 'parental' | 'savings' | 'other';
+
+export interface University {
+  id: string;
+  name: string;
+  slug: string;
+  region: string;
+  tuitionFee: number;        // annual undergraduate fee (home)
+  internationalTuition?: number; // annual for international (if different)
+  rank: number;
+}
+
+export interface Subject {
+  id: string;
+  name: string;
+  slug: string;
+  category: string;
+  baselineRoi: {              // ROI percentages for each degree level
+    bachelors: number;
+    masters: number;
+    phd: number;
+  };
+}
+
+export interface RegionalData {
+  region: string;
+  livingCost: number;         // annual living cost
+  opportunityWage: number;    // annual non‑graduate wage
+}
+
+export interface ROICalculatorData {
+  university: University | null;
+  subject: Subject | null;
+  degreeLevel: DegreeLevel;
+  residency: ResidencyStatus;
+  funding: {
+    source: FundingSource;
+    amount: number;           // annual funding (e.g., scholarship amount)
+  };
+  startYear: number;          // e.g., 2025
+}
+
+export type StepName = 'university' | 'subject' | 'degree' | 'residency' | 'funding';
+import { University, Subject, RegionalData } from './types';
+
+// ---------- Universities (from the PDF, top 30 as sample) ----------
+export const UNIVERSITIES: University[] = [
+  { id: 'oxford', name: 'University of Oxford', slug: 'oxford', region: 'South East', tuitionFee: 9250, rank: 1 },
+  { id: 'cambridge', name: 'University of Cambridge', slug: 'cambridge', region: 'South East', tuitionFee: 9250, rank: 2 },
+  { id: 'imperial', name: 'Imperial College London', slug: 'imperial', region: 'London', tuitionFee: 9250, internationalTuition: 35000, rank: 3 },
+  { id: 'ucl', name: 'UCL', slug: 'ucl', region: 'London', tuitionFee: 9250, internationalTuition: 32000, rank: 4 },
+  { id: 'lse', name: 'London School of Economics', slug: 'lse', region: 'London', tuitionFee: 9250, internationalTuition: 30000, rank: 5 },
+  { id: 'warwick', name: 'University of Warwick', slug: 'warwick', region: 'West Midlands', tuitionFee: 9250, rank: 6 },
+  { id: 'edinburgh', name: 'University of Edinburgh', slug: 'edinburgh', region: 'Scotland', tuitionFee: 9250, rank: 7 },
+  { id: 'bristol', name: 'University of Bristol', slug: 'bristol', region: 'South West', tuitionFee: 9250, rank: 8 },
+  { id: 'kings', name: "King's College London", slug: 'kings', region: 'London', tuitionFee: 9250, internationalTuition: 33000, rank: 9 },
+  { id: 'durham', name: 'Durham University', slug: 'durham', region: 'North East', tuitionFee: 9250, rank: 10 },
+  { id: 'st-andrews', name: 'University of St Andrews', slug: 'st-andrews', region: 'Scotland', tuitionFee: 9250, rank: 11 },
+  { id: 'sheffield', name: 'University of Sheffield', slug: 'sheffield', region: 'Yorkshire', tuitionFee: 9250, rank: 12 },
+  { id: 'birmingham', name: 'University of Birmingham', slug: 'birmingham', region: 'West Midlands', tuitionFee: 9250, rank: 13 },
+  { id: 'southampton', name: 'University of Southampton', slug: 'southampton', region: 'South East', tuitionFee: 9250, rank: 14 },
+  { id: 'manchester', name: 'University of Manchester', slug: 'manchester', region: 'North West', tuitionFee: 9250, rank: 15 },
+  // ... add more up to 150+ as needed
+];
+
+// ---------- Subjects (from the PDF, 60 subjects) ----------
+export const SUBJECTS: Subject[] = [
+  { id: 'medicine', name: 'Medicine', slug: 'medicine', category: 'Medical', baselineRoi: { bachelors: 520, masters: 642, phd: 600 } },
+  { id: 'dentistry', name: 'Dentistry', slug: 'dentistry', category: 'Medical', baselineRoi: { bachelors: 440, masters: 500, phd: 480 } },
+  { id: 'veterinary', name: 'Veterinary Science', slug: 'veterinary', category: 'Medical', baselineRoi: { bachelors: 405, masters: 578, phd: 530 } },
+  { id: 'economics', name: 'Economics', slug: 'economics', category: 'Social Sciences', baselineRoi: { bachelors: 390, masters: 612, phd: 568 } },
+  { id: 'engineering', name: 'General Engineering', slug: 'engineering', category: 'Engineering', baselineRoi: { bachelors: 280, masters: 400, phd: 380 } },
+  { id: 'computer-science', name: 'Computer Science', slug: 'computer-science', category: 'STEM', baselineRoi: { bachelors: 328, masters: 568, phd: 540 } },
+  { id: 'mathematics', name: 'Mathematics', slug: 'mathematics', category: 'STEM', baselineRoi: { bachelors: 216, masters: 512, phd: 490 } },
+  { id: 'pharmacy', name: 'Pharmacy', slug: 'pharmacy', category: 'Medical', baselineRoi: { bachelors: 203, masters: 403, phd: 390 } },
+  { id: 'chemical-engineering', name: 'Chemical Engineering', slug: 'chemical-engineering', category: 'Engineering', baselineRoi: { bachelors: 191, masters: 481, phd: 450 } },
+  { id: 'physics', name: 'Physics', slug: 'physics', category: 'STEM', baselineRoi: { bachelors: 179, masters: 498, phd: 470 } },
+  { id: 'accounting', name: 'Accounting & Finance', slug: 'accounting', category: 'Business', baselineRoi: { bachelors: 167, masters: 502, phd: 480 } },
+  { id: 'electrical-engineering', name: 'Electrical Engineering', slug: 'electrical-engineering', category: 'Engineering', baselineRoi: { bachelors: 154, masters: 426, phd: 410 } },
+  { id: 'mechanical-engineering', name: 'Mechanical Engineering', slug: 'mechanical-engineering', category: 'Engineering', baselineRoi: { bachelors: 142, masters: 411, phd: 400 } },
+  { id: 'law', name: 'Law', slug: 'law', category: 'Law', baselineRoi: { bachelors: 130, masters: 412, phd: 390 } },
+  { id: 'business', name: 'Business & Management', slug: 'business', category: 'Business', baselineRoi: { bachelors: 117, masters: 481, phd: 460 } },
+  { id: 'nursing', name: 'Nursing', slug: 'nursing', category: 'Medical', baselineRoi: { bachelors: 105, masters: 348, phd: 300 } },
+  // ... add all 60 subjects from the PDF
+];
+
+// ---------- Regional cost & wage data (from the PDF) ----------
+export const REGIONAL_DATA: RegionalData[] = [
+  { region: 'London', livingCost: 16000, opportunityWage: 22000 },
+  { region: 'South East', livingCost: 14000, opportunityWage: 21000 },
+  { region: 'East of England', livingCost: 13500, opportunityWage: 20500 },
+  { region: 'South West', livingCost: 13000, opportunityWage: 19500 },
+  { region: 'West Midlands', livingCost: 12000, opportunityWage: 19500 },
+  { region: 'East Midlands', livingCost: 11500, opportunityWage: 19000 },
+  { region: 'North West', livingCost: 11500, opportunityWage: 19000 },
+  { region: 'Yorkshire', livingCost: 11000, opportunityWage: 18500 },
+  { region: 'North East', livingCost: 10500, opportunityWage: 18000 },
+  { region: 'Scotland', livingCost: 11500, opportunityWage: 19000 },
+  { region: 'Wales', livingCost: 10500, opportunityWage: 18000 },
+  { region: 'Northern Ireland', livingCost: 10000, opportunityWage: 17500 },
+];
+
+// ---------- Step names for progress indicator ----------
+export const STEPS: { key: string; label: string }[] = [
+  { key: 'university', label: 'University' },
+  { key: 'subject', label: 'Subject' },
+  { key: 'degree', label: 'Degree Level' },
+  { key: 'residency', label: 'Residency' },
+  { key: 'funding', label: 'Funding' },
+];
+import { University, Subject, RegionalData } from './types';
+
+// ---------- Universities (from the PDF, top 30 as sample) ----------
+export const UNIVERSITIES: University[] = [
+  { id: 'oxford', name: 'University of Oxford', slug: 'oxford', region: 'South East', tuitionFee: 9250, rank: 1 },
+  { id: 'cambridge', name: 'University of Cambridge', slug: 'cambridge', region: 'South East', tuitionFee: 9250, rank: 2 },
+  { id: 'imperial', name: 'Imperial College London', slug: 'imperial', region: 'London', tuitionFee: 9250, internationalTuition: 35000, rank: 3 },
+  { id: 'ucl', name: 'UCL', slug: 'ucl', region: 'London', tuitionFee: 9250, internationalTuition: 32000, rank: 4 },
+  { id: 'lse', name: 'London School of Economics', slug: 'lse', region: 'London', tuitionFee: 9250, internationalTuition: 30000, rank: 5 },
+  { id: 'warwick', name: 'University of Warwick', slug: 'warwick', region: 'West Midlands', tuitionFee: 9250, rank: 6 },
+  { id: 'edinburgh', name: 'University of Edinburgh', slug: 'edinburgh', region: 'Scotland', tuitionFee: 9250, rank: 7 },
+  { id: 'bristol', name: 'University of Bristol', slug: 'bristol', region: 'South West', tuitionFee: 9250, rank: 8 },
+  { id: 'kings', name: "King's College London", slug: 'kings', region: 'London', tuitionFee: 9250, internationalTuition: 33000, rank: 9 },
+  { id: 'durham', name: 'Durham University', slug: 'durham', region: 'North East', tuitionFee: 9250, rank: 10 },
+  { id: 'st-andrews', name: 'University of St Andrews', slug: 'st-andrews', region: 'Scotland', tuitionFee: 9250, rank: 11 },
+  { id: 'sheffield', name: 'University of Sheffield', slug: 'sheffield', region: 'Yorkshire', tuitionFee: 9250, rank: 12 },
+  { id: 'birmingham', name: 'University of Birmingham', slug: 'birmingham', region: 'West Midlands', tuitionFee: 9250, rank: 13 },
+  { id: 'southampton', name: 'University of Southampton', slug: 'southampton', region: 'South East', tuitionFee: 9250, rank: 14 },
+  { id: 'manchester', name: 'University of Manchester', slug: 'manchester', region: 'North West', tuitionFee: 9250, rank: 15 },
+  // ... add more up to 150+ as needed
+];
+
+// ---------- Subjects (from the PDF, 60 subjects) ----------
+export const SUBJECTS: Subject[] = [
+  { id: 'medicine', name: 'Medicine', slug: 'medicine', category: 'Medical', baselineRoi: { bachelors: 520, masters: 642, phd: 600 } },
+  { id: 'dentistry', name: 'Dentistry', slug: 'dentistry', category: 'Medical', baselineRoi: { bachelors: 440, masters: 500, phd: 480 } },
+  { id: 'veterinary', name: 'Veterinary Science', slug: 'veterinary', category: 'Medical', baselineRoi: { bachelors: 405, masters: 578, phd: 530 } },
+  { id: 'economics', name: 'Economics', slug: 'economics', category: 'Social Sciences', baselineRoi: { bachelors: 390, masters: 612, phd: 568 } },
+  { id: 'engineering', name: 'General Engineering', slug: 'engineering', category: 'Engineering', baselineRoi: { bachelors: 280, masters: 400, phd: 380 } },
+  { id: 'computer-science', name: 'Computer Science', slug: 'computer-science', category: 'STEM', baselineRoi: { bachelors: 328, masters: 568, phd: 540 } },
+  { id: 'mathematics', name: 'Mathematics', slug: 'mathematics', category: 'STEM', baselineRoi: { bachelors: 216, masters: 512, phd: 490 } },
+  { id: 'pharmacy', name: 'Pharmacy', slug: 'pharmacy', category: 'Medical', baselineRoi: { bachelors: 203, masters: 403, phd: 390 } },
+  { id: 'chemical-engineering', name: 'Chemical Engineering', slug: 'chemical-engineering', category: 'Engineering', baselineRoi: { bachelors: 191, masters: 481, phd: 450 } },
+  { id: 'physics', name: 'Physics', slug: 'physics', category: 'STEM', baselineRoi: { bachelors: 179, masters: 498, phd: 470 } },
+  { id: 'accounting', name: 'Accounting & Finance', slug: 'accounting', category: 'Business', baselineRoi: { bachelors: 167, masters: 502, phd: 480 } },
+  { id: 'electrical-engineering', name: 'Electrical Engineering', slug: 'electrical-engineering', category: 'Engineering', baselineRoi: { bachelors: 154, masters: 426, phd: 410 } },
+  { id: 'mechanical-engineering', name: 'Mechanical Engineering', slug: 'mechanical-engineering', category: 'Engineering', baselineRoi: { bachelors: 142, masters: 411, phd: 400 } },
+  { id: 'law', name: 'Law', slug: 'law', category: 'Law', baselineRoi: { bachelors: 130, masters: 412, phd: 390 } },
+  { id: 'business', name: 'Business & Management', slug: 'business', category: 'Business', baselineRoi: { bachelors: 117, masters: 481, phd: 460 } },
+  { id: 'nursing', name: 'Nursing', slug: 'nursing', category: 'Medical', baselineRoi: { bachelors: 105, masters: 348, phd: 300 } },
+  // ... add all 60 subjects from the PDF
+];
+
+// ---------- Regional cost & wage data (from the PDF) ----------
+export const REGIONAL_DATA: RegionalData[] = [
+  { region: 'London', livingCost: 16000, opportunityWage: 22000 },
+  { region: 'South East', livingCost: 14000, opportunityWage: 21000 },
+  { region: 'East of England', livingCost: 13500, opportunityWage: 20500 },
+  { region: 'South West', livingCost: 13000, opportunityWage: 19500 },
+  { region: 'West Midlands', livingCost: 12000, opportunityWage: 19500 },
+  { region: 'East Midlands', livingCost: 11500, opportunityWage: 19000 },
+  { region: 'North West', livingCost: 11500, opportunityWage: 19000 },
+  { region: 'Yorkshire', livingCost: 11000, opportunityWage: 18500 },
+  { region: 'North East', livingCost: 10500, opportunityWage: 18000 },
+  { region: 'Scotland', livingCost: 11500, opportunityWage: 19000 },
+  { region: 'Wales', livingCost: 10500, opportunityWage: 18000 },
+  { region: 'Northern Ireland', livingCost: 10000, opportunityWage: 17500 },
+];
+
+// ---------- Step names for progress indicator ----------
+export const STEPS: { key: string; label: string }[] = [
+  { key: 'university', label: 'University' },
+  { key: 'subject', label: 'Subject' },
+  { key: 'degree', label: 'Degree Level' },
+  { key: 'residency', label: 'Residency' },
+  { key: 'funding', label: 'Funding' },
+];
+import { ROICalculatorData, StepName } from '../types';
+
+export const validateStep = (
+  step: StepName,
+  data: ROICalculatorData
+): { isValid: boolean; errors: string[] } => {
+  const errors: string[] = [];
+
+  switch (step) {
+    case 'university':
+      if (!data.university) {
+        errors.push('Please select a university.');
+      }
+      break;
+
+    case 'subject':
+      if (!data.subject) {
+        errors.push('Please select a subject.');
+      }
+      break;
+
+    case 'degree':
+      if (!data.degreeLevel) {
+        errors.push('Please select a degree level.');
+      }
+      break;
+
+    case 'residency':
+      if (!data.residency) {
+        errors.push('Please select your residency status.');
+      }
+      break;
+
+    case 'funding':
+      if (!data.funding.source) {
+        errors.push('Please select a funding source.');
+      }
+      if (data.funding.amount < 0) {
+        errors.push('Funding amount cannot be negative.');
+      }
+      // Funding amount can be zero (no funding)
+      break;
+
+    default:
+      break;
+  }
+
+  return { isValid: errors.length === 0, errors };
+};
+import { useState, useCallback } from 'react';
+import { ROICalculatorData, StepName, DegreeLevel, ResidencyStatus, FundingSource } from '../types';
+import { validateStep } from '../utils/validation';
+
+const initialData: ROICalculatorData = {
+  university: null,
+  subject: null,
+  degreeLevel: 'bachelors',
+  residency: 'home',
+  funding: {
+    source: 'loans',
+    amount: 0,
+  },
+  startYear: new Date().getFullYear(),
+};
+
+export const useROIForm = (totalSteps: number) => {
+  const [currentStep, setCurrentStep] = useState<number>(0);
+  const [formData, setFormData] = useState<ROICalculatorData>(initialData);
+  const [errors, setErrors] = useState<string[]>([]);
+
+  const stepKeys: StepName[] = ['university', 'subject', 'degree', 'residency', 'funding'];
+
+  const updateForm = useCallback(
+    <K extends keyof ROICalculatorData>(key: K, value: ROICalculatorData[K]) => {
+      setFormData((prev) => ({ ...prev, [key]: value }));
+      // Clear errors for the current step when user makes a change
+      setErrors([]);
+    },
+    []
+  );
+
+  const updateNestedForm = useCallback(
+    <K extends keyof ROICalculatorData>(
+      parentKey: K,
+      childKey: keyof ROICalculatorData[K],
+      value: any
+    ) => {
+      setFormData((prev) => ({
+        ...prev,
+        [parentKey]: {
+          ...(prev[parentKey] as object),
+          [childKey]: value,
+        },
+      }));
+      setErrors([]);
+    },
+    []
+  );
+
+  const goToNextStep = useCallback(() => {
+    const currentStepKey = stepKeys[currentStep];
+    const { isValid, errors: stepErrors } = validateStep(currentStepKey, formData);
+    if (!isValid) {
+      setErrors(stepErrors);
+      return false;
+    }
+    if (currentStep < totalSteps - 1) {
+      setCurrentStep((prev) => prev + 1);
+      setErrors([]);
+    }
+    return true;
+  }, [currentStep, formData, stepKeys, totalSteps]);
+
+  const goToPreviousStep = useCallback(() => {
+    if (currentStep > 0) {
+      setCurrentStep((prev) => prev - 1);
+      setErrors([]);
+    }
+  }, [currentStep]);
+
+  const goToStep = useCallback(
+    (stepIndex: number) => {
+      if (stepIndex >= 0 && stepIndex < totalSteps) {
+        // Optionally validate all steps up to that point? For now, just navigate.
+        setCurrentStep(stepIndex);
+        setErrors([]);
+      }
+    },
+    [totalSteps]
+  );
+
+  const resetForm = useCallback(() => {
+    setFormData(initialData);
+    setCurrentStep(0);
+    setErrors([]);
+  }, []);
+
+  const isLastStep = currentStep === totalSteps - 1;
+
+  return {
+    currentStep,
+    formData,
+    errors,
+    updateForm,
+    updateNestedForm,
+    goToNextStep,
+    goToPreviousStep,
+    goToStep,
+    resetForm,
+    isLastStep,
+  };
+};
+import React from 'react';
+import { STEPS } from '../constants';
+
+interface ProgressIndicatorProps {
+  currentStep: number;
+  onStepClick: (index: number) => void;
+}
+
+export const ProgressIndicator: React.FC<ProgressIndicatorProps> = ({
+  currentStep,
+  onStepClick,
+}) => {
+  return (
+    <div className="w-full py-6">
+      <div className="flex items-center justify-between">
+        {STEPS.map((step, index) => {
+          const isActive = index === currentStep;
+          const isCompleted = index < currentStep;
+
+          return (
+            <React.Fragment key={step.key}>
+              {/* Step circle */}
+              <button
+                onClick={() => onStepClick(index)}
+                className={`relative flex flex-col items-center group focus:outline-none`}
+                disabled={index > currentStep} // cannot skip ahead
+                aria-current={isActive ? 'step' : undefined}
+              >
+                <div
+                  className={`
+                    w-10 h-10 rounded-full flex items-center justify-center border-2 transition-all
+                    ${
+                      isActive
+                        ? 'border-turquoise bg-turquoise text-white'
+                        : isCompleted
+                        ? 'border-midnight-teal bg-midnight-teal text-white'
+                        : 'border-soft-grey bg-white text-slate'
+                    }
+                  `}
+                >
+                  {isCompleted ? (
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path
+                        fillRule="evenodd"
+                        d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  ) : (
+                    <span>{index + 1}</span>
+                  )}
+                </div>
+                <span
+                  className={`
+                    absolute top-12 text-sm font-body whitespace-nowrap
+                    ${isActive ? 'text-deep-navy font-medium' : 'text-slate'}
+                  `}
+                >
+                  {step.label}
+                </span>
+              </button>
+
+              {/* Connector line (except after last step) */}
+              {index < STEPS.length - 1 && (
+                <div
+                  className={`
+                    flex-1 h-0.5 mx-2 transition-colors
+                    ${index < currentStep ? 'bg-midnight-teal' : 'bg-soft-grey'}
+                  `}
+                />
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+import React from 'react';
+
+interface FormNavigationProps {
+  currentStep: number;
+  totalSteps: number;
+  onNext: () => void;
+  onPrevious: () => void;
+  isLastStep: boolean;
+  nextLabel?: string;
+  previousLabel?: string;
+  disableNext?: boolean;
+}
+
+export const FormNavigation: React.FC<FormNavigationProps> = ({
+  currentStep,
+  totalSteps,
+  onNext,
+  onPrevious,
+  isLastStep,
+  nextLabel = 'Continue',
+  previousLabel = 'Back',
+  disableNext = false,
+}) => {
+  return (
+    <div className="flex justify-between mt-8 pt-6 border-t border-soft-grey">
+      <button
+        type="button"
+        onClick={onPrevious}
+        disabled={currentStep === 0}
+        className={`
+          px-6 py-3 rounded-lg font-body text-sm font-medium transition-all
+          ${
+            currentStep === 0
+              ? 'bg-soft-grey text-slate cursor-not-allowed opacity-50'
+              : 'bg-white border border-midnight-teal text-midnight-teal hover:bg-mint/20'
+          }
+        `}
+      >
+        ← {previousLabel}
+      </button>
+
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={disableNext}
+        className={`
+          px-6 py-3 rounded-lg font-body text-sm font-medium transition-all
+          ${
+            disableNext
+              ? 'bg-soft-grey text-slate cursor-not-allowed opacity-50'
+              : 'bg-turquoise text-white hover:bg-turquoise/90 shadow-md'
+          }
+        `}
+      >
+        {isLastStep ? 'Calculate ROI' : nextLabel + ' →'}
+      </button>
+    </div>
+  );
+};
+import React, { InputHTMLAttributes } from 'react';
+
+interface InputFieldProps extends InputHTMLAttributes<HTMLInputElement> {
+  label: string;
+  error?: string;
+  tooltip?: string;
+}
+
+export const InputField: React.FC<InputFieldProps> = ({
+  label,
+  error,
+  tooltip,
+  id,
+  className = '',
+  ...props
+}) => {
+  const inputId = id || `input-${label.replace(/\s+/g, '-').toLowerCase()}`;
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-2 mb-1">
+        <label htmlFor={inputId} className="block text-sm font-body font-medium text-charcoal">
+          {label}
+        </label>
+        {tooltip && (
+          <div className="group relative">
+            <span className="text-slate text-sm cursor-help border-b border-dotted border-slate">ⓘ</span>
+            <div className="absolute left-0 bottom-6 hidden group-hover:block w-48 p-2 bg-deep-navy text-white text-xs rounded shadow-lg z-10">
+              {tooltip}
+            </div>
+          </div>
+        )}
+      </div>
+      <input
+        id={inputId}
+        className={`
+          w-full px-4 py-3 rounded-lg border bg-white transition-colors
+          focus:outline-none focus:ring-2 focus:ring-turquoise/50
+          ${error ? 'border-coral-kiss' : 'border-soft-grey hover:border-midnight-teal'}
+          ${className}
+        `}
+        {...props}
+      />
+      {error && <p className="mt-1 text-sm text-coral-kiss">{error}</p>}
+    </div>
+  );
+};
+import React, { SelectHTMLAttributes } from 'react';
+
+interface Option {
+  value: string;
+  label: string;
+}
+
+interface SelectFieldProps extends SelectHTMLAttributes<HTMLSelectElement> {
+  label: string;
+  options: Option[];
+  error?: string;
+  tooltip?: string;
+}
+
+export const SelectField: React.FC<SelectFieldProps> = ({
+  label,
+  options,
+  error,
+  tooltip,
+  id,
+  className = '',
+  ...props
+}) => {
+  const selectId = id || `select-${label.replace(/\s+/g, '-').toLowerCase()}`;
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-2 mb-1">
+        <label htmlFor={selectId} className="block text-sm font-body font-medium text-charcoal">
+          {label}
+        </label>
+        {tooltip && (
+          <div className="group relative">
+            <span className="text-slate text-sm cursor-help border-b border-dotted border-slate">ⓘ</span>
+            <div className="absolute left-0 bottom-6 hidden group-hover:block w-48 p-2 bg-deep-navy text-white text-xs rounded shadow-lg z-10">
+              {tooltip}
+            </div>
+          </div>
+        )}
+      </div>
+      <select
+        id={selectId}
+        className={`
+          w-full px-4 py-3 rounded-lg border bg-white transition-colors
+          focus:outline-none focus:ring-2 focus:ring-turquoise/50
+          ${error ? 'border-coral-kiss' : 'border-soft-grey hover:border-midnight-teal'}
+          ${className}
+        `}
+        {...props}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      {error && <p className="mt-1 text-sm text-coral-kiss">{error}</p>}
+    </div>
+  );
+};
+import React, { useMemo } from 'react';
+import { ROICalculatorData, University } from '../types';
+import { UNIVERSITIES } from '../constants';
+import { SelectField } from '../components/SelectField';
+
+interface UniversityStepProps {
+  data: ROICalculatorData;
+  onUpdate: (data: Partial<ROICalculatorData>) => void;
+  errors: string[];
+}
+
+export const UniversityStep: React.FC<UniversityStepProps> = ({ data, onUpdate, errors }) => {
+  const universityOptions = useMemo(
+    () =>
+      UNIVERSITIES.map((uni) => ({
+        value: uni.id,
+        label: uni.name,
+      })),
+    []
+  );
+
+  const handleUniversityChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const uniId = e.target.value;
+    const selected = UNIVERSITIES.find((u) => u.id === uniId) || null;
+    onUpdate({ university: selected });
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center mb-8">
+        <h2 className="font-heading text-3xl text-deep-navy">Choose your university</h2>
+        <p className="text-slate mt-2">Select from over 150 UK institutions</p>
+      </div>
+
+      <SelectField
+        label="University"
+        options={universityOptions}
+        value={data.university?.id || ''}
+        onChange={handleUniversityChange}
+        error={errors.find((e) => e.includes('university'))}
+        tooltip="The university you plan to attend. We use institutional ROI and regional cost data."
+        placeholder="Select a university"
+      />
+
+      {data.university && (
+        <div className="mt-6 p-4 bg-mint/10 rounded-lg border border-mint">
+          <h3 className="font-medium text-deep-navy mb-2">{data.university.name}</h3>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-slate">Region:</span>
+              <span className="ml-2 font-mono text-midnight-teal">{data.university.region}</span>
+            </div>
+            <div>
+              <span className="text-slate">Annual tuition (home):</span>
+              <span className="ml-2 font-mono text-turquoise">£{data.university.tuitionFee.toLocaleString()}</span>
+            </div>
+            {data.university.internationalTuition && (
+              <div>
+                <span className="text-slate">International tuition:</span>
+                <span className="ml-2 font-mono text-turquoise">£{data.university.internationalTuition.toLocaleString()}</span>
+              </div>
+            )}
+            <div>
+              <span className="text-slate">Rank:</span>
+              <span className="ml-2 font-mono text-deep-navy">#{data.university.rank}</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+import React, { useMemo } from 'react';
+import { ROICalculatorData, Subject } from '../types';
+import { SUBJECTS } from '../constants';
+import { SelectField } from '../components/SelectField';
+
+interface SubjectStepProps {
+  data: ROICalculatorData;
+  onUpdate: (data: Partial<ROICalculatorData>) => void;
+  errors: string[];
+}
+
+export const SubjectStep: React.FC<SubjectStepProps> = ({ data, onUpdate, errors }) => {
+  const subjectOptions = useMemo(
+    () =>
+      SUBJECTS.map((subj) => ({
+        value: subj.id,
+        label: subj.name,
+      })),
+    []
+  );
+
+  const handleSubjectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const subjId = e.target.value;
+    const selected = SUBJECTS.find((s) => s.id === subjId) || null;
+    onUpdate({ subject: selected });
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center mb-8">
+        <h2 className="font-heading text-3xl text-deep-navy">Choose your subject</h2>
+        <p className="text-slate mt-2">We have data on 60+ degree subjects</p>
+      </div>
+
+      <SelectField
+        label="Subject"
+        options={subjectOptions}
+        value={data.subject?.id || ''}
+        onChange={handleSubjectChange}
+        error={errors.find((e) => e.includes('subject'))}
+        tooltip="The subject you intend to study. Subject choice drives 70% of earnings variance."
+        placeholder="Select a subject"
+      />
+
+      {data.subject && (
+        <div className="mt-6 p-4 bg-mint/10 rounded-lg border border-mint">
+          <h3 className="font-medium text-deep-navy mb-2">{data.subject.name}</h3>
+          <div className="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <span className="text-slate">Bachelor's ROI:</span>
+              <span className="ml-2 font-mono text-turquoise">{data.subject.baselineRoi.bachelors}%</span>
+            </div>
+            <div>
+              <span className="text-slate">Master's ROI:</span>
+              <span className="ml-2 font-mono text-turquoise">{data.subject.baselineRoi.masters}%</span>
+            </div>
+            <div>
+              <span className="text-slate">PhD ROI:</span>
+              <span className="ml-2 font-mono text-turquoise">{data.subject.baselineRoi.phd}%</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+import React from 'react';
+import { ROICalculatorData, DegreeLevel } from '../types';
+
+interface DegreeLevelStepProps {
+  data: ROICalculatorData;
+  onUpdate: (data: Partial<ROICalculatorData>) => void;
+  errors: string[];
+}
+
+const degreeLevels: { value: DegreeLevel; label: string; years: number; description: string }[] = [
+  { value: 'bachelors', label: "Bachelor's Degree", years: 3, description: 'Typically 3 years full‑time' },
+  { value: 'masters', label: "Master's Degree", years: 4, description: 'Includes Bachelor’s + 1 extra year' },
+  { value: 'phd', label: 'PhD / Doctorate', years: 6, description: 'Bachelor’s + 3+ years research' },
+];
+
+export const DegreeLevelStep: React.FC<DegreeLevelStepProps> = ({ data, onUpdate, errors }) => {
+  const handleSelect = (level: DegreeLevel) => {
+    onUpdate({ degreeLevel: level });
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center mb-8">
+        <h2 className="font-heading text-3xl text-deep-navy">Degree level</h2>
+        <p className="text-slate mt-2">Select the level you plan to complete</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {degreeLevels.map((level) => {
+          const isSelected = data.degreeLevel === level.value;
+          return (
+            <button
+              key={level.value}
+              type="button"
+              onClick={() => handleSelect(level.value)}
+              className={`
+                p-6 rounded-xl border-2 text-left transition-all
+                ${
+                  isSelected
+                    ? 'border-turquoise bg-turquoise/5 shadow-md'
+                    : 'border-soft-grey bg-white hover:border-midnight-teal'
+                }
+              `}
+            >
+              <div className="font-heading text-xl text-deep-navy mb-1">{level.label}</div>
+              <div className="text-sm text-slate mb-2">{level.description}</div>
+              <div className="text-sm">
+                <span className="font-mono text-midnight-teal">{level.years} years</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {errors.length > 0 && (
+        <p className="text-coral-kiss text-sm mt-2">{errors[0]}</p>
+      )}
+    </div>
+  );
+};
+import React from 'react';
+import { ROICalculatorData, ResidencyStatus } from '../types';
+import { REGIONAL_DATA } from '../constants';
+
+interface ResidencyStepProps {
+  data: ROICalculatorData;
+  onUpdate: (data: Partial<ROICalculatorData>) => void;
+  errors: string[];
+}
+
+export const ResidencyStep: React.FC<ResidencyStepProps> = ({ data, onUpdate, errors }) => {
+  const residencyOptions: { value: ResidencyStatus; label: string; description: string }[] = [
+    { value: 'home', label: 'Home (UK) student', description: 'Pays home tuition fees' },
+    { value: 'international', label: 'International student', description: 'Pays international tuition fees' },
+  ];
+
+  const handleResidencyChange = (status: ResidencyStatus) => {
+    onUpdate({ residency: status });
+  };
+
+  // Find regional data for the selected university
+  const regionData = data.university
+    ? REGIONAL_DATA.find((r) => r.region === data.university.region)
+    : null;
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center mb-8">
+        <h2 className="font-heading text-3xl text-deep-navy">Residency status</h2>
+        <p className="text-slate mt-2">This affects tuition fees and living costs</p>
+      </div>
+
+      <div className="flex flex-col md:flex-row gap-4">
+        {residencyOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => handleResidencyChange(option.value)}
+            className={`
+              flex-1 p-6 rounded-xl border-2 text-left transition-all
+              ${
+                data.residency === option.value
+                  ? 'border-turquoise bg-turquoise/5 shadow-md'
+                  : 'border-soft-grey bg-white hover:border-midnight-teal'
+              }
+            `}
+          >
+            <div className="font-heading text-xl text-deep-navy mb-1">{option.label}</div>
+            <div className="text-sm text-slate">{option.description}</div>
+          </button>
+        ))}
+      </div>
+
+      {data.university && (
+        <div className="mt-6 p-4 bg-mint/10 rounded-lg border border-mint">
+          <h3 className="font-medium text-deep-navy mb-2">Estimated annual costs for {data.university.name}</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-slate">Tuition ({data.residency}):</span>
+              <span className="ml-2 font-mono text-turquoise">
+                £
+                {data.residency === 'home'
+                  ? data.university.tuitionFee.toLocaleString()
+                  : (data.university.internationalTuition || data.university.tuitionFee * 3).toLocaleString()}
+              </span>
+            </div>
+            {regionData && (
+              <>
+                <div>
+                  <span className="text-slate">Living cost:</span>
+                  <span className="ml-2 font-mono text-turquoise">£{regionData.livingCost.toLocaleString()}</span>
+                </div>
+                <div>
+                  <span className="text-slate">Opportunity wage (forgone):</span>
+                  <span className="ml-2 font-mono text-turquoise">£{regionData.opportunityWage.toLocaleString()}</span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {errors.length > 0 && (
+        <p className="text-coral-kiss text-sm mt-2">{errors[0]}</p>
+      )}
+    </div>
+  );
+};
+import React from 'react';
+import { ROICalculatorData, FundingSource } from '../types';
+import { InputField } from '../components/InputField';
+import { SelectField } from '../components/SelectField';
+
+interface FundingStepProps {
+  data: ROICalculatorData;
+  onUpdate: (data: Partial<ROICalculatorData>) => void;
+  onNestedUpdate: (parentKey: keyof ROICalculatorData, childKey: string, value: any) => void;
+  errors: string[];
+}
+
+const fundingSources: { value: FundingSource; label: string }[] = [
+  { value: 'loans', label: 'Student loans' },
+  { value: 'scholarships', label: 'Scholarships / grants' },
+  { value: 'parental', label: 'Parental support' },
+  { value: 'savings', label: 'Personal savings' },
+  { value: 'other', label: 'Other' },
+];
+
+export const FundingStep: React.FC<FundingStepProps> = ({
+  data,
+  onUpdate,
+  onNestedUpdate,
+  errors,
+}) => {
+  const handleSourceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    onNestedUpdate('funding', 'source', e.target.value as FundingSource);
+  };
+
+  const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseFloat(e.target.value) || 0;
+    onNestedUpdate('funding', 'amount', value);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center mb-8">
+        <h2 className="font-heading text-3xl text-deep-navy">How will you fund your studies?</h2>
+        <p className="text-slate mt-2">This helps us calculate your net investment</p>
+      </div>
+
+      <SelectField
+        label="Primary funding source"
+        options={fundingSources}
+        value={data.funding.source}
+        onChange={handleSourceChange}
+        error={errors.find((e) => e.includes('source'))}
+        tooltip="The main way you'll cover tuition and living costs."
+      />
+
+      <InputField
+        label="Annual funding amount (£)"
+        type="number"
+        min={0}
+        step={100}
+        value={data.funding.amount || ''}
+        onChange={handleAmountChange}
+        error={errors.find((e) => e.includes('amount'))}
+        tooltip="How much money you expect to receive each year from this source (e.g., scholarship amount)."
+      />
+
+      <div className="mt-6 p-4 bg-lavender-mist/20 rounded-lg border border-lavender-mist">
+        <p className="text-sm text-deep-navy">
+          <span className="font-medium">Note:</span> If you have multiple funding sources, enter the total amount.
+          Any remaining costs are assumed to be covered by loans or savings.
+        </p>
+      </div>
+    </div>
+  );
+};
+'use client';
+
+import React from 'react';
+import { useROIForm } from './hooks/useROIForm';
+import { ProgressIndicator } from './components/ProgressIndicator';
+import { FormNavigation } from './components/FormNavigation';
+
+// Step components
+import { UniversityStep } from './steps/UniversityStep';
+import { SubjectStep } from './steps/SubjectStep';
+import { DegreeLevelStep } from './steps/DegreeLevelStep';
+import { ResidencyStep } from './steps/ResidencyStep';
+import { FundingStep } from './steps/FundingStep';
+
+const TOTAL_STEPS = 5;
+
+export const ROICalculator: React.FC = () => {
+  const {
+    currentStep,
+    formData,
+    errors,
+    updateForm,
+    updateNestedForm,
+    goToNextStep,
+    goToPreviousStep,
+    goToStep,
+    isLastStep,
+  } = useROIForm(TOTAL_STEPS);
+
+  const handleSubmit = () => {
+    // In a real implementation, you would send formData to the backend API
+    console.log('Submitting ROI calculation:', formData);
+    // Simulate API call, then redirect to results page or show results modal
+    alert('Calculation submitted! (Check console)');
+  };
+
+  const renderStep = () => {
+    const stepProps = {
+      data: formData,
+      onUpdate: updateForm,
+      onNestedUpdate: updateNestedForm,
+      errors,
+    };
+
+    switch (currentStep) {
+      case 0:
+        return <UniversityStep {...stepProps} />;
+      case 1:
+        return <SubjectStep {...stepProps} />;
+      case 2:
+        return <DegreeLevelStep {...stepProps} />;
+      case 3:
+        return <ResidencyStep {...stepProps} />;
+      case 4:
+        return <FundingStep {...stepProps} />;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-8 bg-white rounded-2xl shadow-lg">
+      {/* Header */}
+      <div className="text-center mb-8">
+        <h1 className="font-heading text-4xl text-deep-navy">ROI Calculator</h1>
+        <p className="text-slate mt-2">See what your degree could be worth</p>
+      </div>
+
+      {/* Progress indicator */}
+      <ProgressIndicator currentStep={currentStep} onStepClick={goToStep} />
+
+      {/* Step content */}
+      <div className="mt-8 min-h-[400px]">{renderStep()}</div>
+
+      {/* Error display */}
+      {errors.length > 0 && (
+        <div className="mt-4 p-3 bg-coral-kiss/10 border border-coral-kiss rounded-lg">
+          <p className="text-coral-kiss text-sm">{errors[0]}</p>
+        </div>
+      )}
+
+      {/* Navigation buttons */}
+      <FormNavigation
+        currentStep={currentStep}
+        totalSteps={TOTAL_STEPS}
+        onNext={isLastStep ? handleSubmit : goToNextStep}
+        onPrevious={goToPreviousStep}
+        isLastStep={isLastStep}
+        disableNext={errors.length > 0}
+      />
+
+      {/* Disclaimer */}
+      <p className="text-xs text-slate text-center mt-6">
+        * All figures are estimates based on HESA, LEO, and IFS data. Individual outcomes may vary.
+      </p>
+    </div>
+  );
+};
+
+export default ROICalculator;

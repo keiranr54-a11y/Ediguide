@@ -14378,3 +14378,1042 @@ export const formatDate = (date: Date): string => {
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
   "exclude": ["node_modules"]
 }
+ediguide/
+├── app/
+│   ├── [university]/
+│   │   └── page.tsx
+│   ├── api/
+│   │   └── university/
+│   │       └── [slug]/
+│   │           └── route.ts
+│   └── layout.tsx
+├── components/
+│   ├── ui/
+│   │   ├── Card.tsx
+│   │   ├── Badge.tsx
+│   │   └── Spinner.tsx
+│   ├── university/
+│   │   ├── ProfileHeader.tsx
+│   │   ├── KeyStats.tsx
+│   │   ├── SubjectStrengthHeatmap.tsx
+│   │   ├── ROIChart.tsx
+│   │   ├── SimilarUniversities.tsx
+│   │   └── PinterestButton.tsx
+├── lib/
+│   ├── api.ts
+│   └── constants.ts
+├── types/
+│   └── university.ts
+├── utils/
+│   ├── format.ts
+│   └── logger.ts
+├── data/
+│   └── mockUniversityData.ts
+└── styles/
+    └── globals.css
+// types/university.ts
+
+export type Region =
+  | 'London'
+  | 'South East'
+  | 'South West'
+  | 'East of England'
+  | 'West Midlands'
+  | 'East Midlands'
+  | 'North West'
+  | 'Yorkshire and the Humber'
+  | 'North East'
+  | 'Scotland'
+  | 'Wales'
+  | 'Northern Ireland';
+
+export interface UniversityCore {
+  id: string;
+  rank: number;
+  name: string;
+  slug: string;
+  region: Region;
+  compositeScore: number;
+  percentBetterThanMedian: number; // e.g., 98.85
+  lifetimeNetGain2026: number;     // in GBP
+  roiMultiplier: number;            // e.g., 2.71
+  studentSatisfaction: number;      // 0-100
+  graduateEmploymentRate: number;   // 0-100 (15 months)
+  averageSalary5Years: number;      // GBP
+}
+
+export interface SubjectStrength {
+  subject: string;
+  subjectSlug: string;
+  roi: number;          // percentage
+  level: 'undergraduate' | 'postgraduate' | 'research';
+}
+
+export interface EarningsPoint {
+  year: number;         // years after graduation
+  earnings: number;     // GBP
+}
+
+export interface SimilarUniversity {
+  id: string;
+  name: string;
+  slug: string;
+  rank: number;
+  compositeScore: number;
+}
+
+export interface UniversityProfile extends UniversityCore {
+  description: string;                // full prose description
+  heroImageUrl?: string;              // optional aesthetic image
+  galleryImages?: string[];           // array of image URLs
+  subjectStrengths: SubjectStrength[];
+  earningsTrajectory: EarningsPoint[]; // at least 5-10 points
+  similarUniversities: SimilarUniversity[];
+  // additional metadata
+  founded?: number;
+  totalStudents?: number;
+  internationalStudentPercentage?: number;
+  costOfLivingIndex?: number;          // relative to UK average = 100
+}
+// utils/format.ts
+
+export const formatCurrency = (amount: number): string => {
+  return new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: 'GBP',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(amount);
+};
+
+export const formatPercentage = (value: number, decimals = 1): string => {
+  return `${value.toFixed(decimals)}%`;
+};
+
+export const formatCompactNumber = (num: number): string => {
+  if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+  if (num >= 1_000) return (num / 1_000).toFixed(1) + 'k';
+  return num.toString();
+};
+
+export const formatROIMultiplier = (multiplier: number): string => {
+  return multiplier.toFixed(2) + '×';
+};
+
+export const slugify = (text: string): string => {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w-]+/g, '');
+};
+// data/mockUniversityData.ts
+
+import {
+  UniversityProfile,
+  SubjectStrength,
+  EarningsPoint,
+} from '@/types/university';
+
+const mockEarningsTrajectory: EarningsPoint[] = [
+  { year: 0, earnings: 25000 },
+  { year: 5, earnings: 35000 },
+  { year: 10, earnings: 48000 },
+  { year: 15, earnings: 60000 },
+  { year: 20, earnings: 68000 },
+  { year: 25, earnings: 72000 },
+  { year: 30, earnings: 75000 },
+  { year: 35, earnings: 77000 },
+  { year: 40, earnings: 78000 },
+];
+
+const mockSubjectStrengthsOxford: SubjectStrength[] = [
+  { subject: 'Medicine', subjectSlug: 'medicine', roi: 642, level: 'undergraduate' },
+  { subject: 'Economics', subjectSlug: 'economics', roi: 612, level: 'undergraduate' },
+  { subject: 'Computer Science', subjectSlug: 'computer-science', roi: 568, level: 'undergraduate' },
+  { subject: 'Law', subjectSlug: 'law', roi: 412, level: 'undergraduate' },
+  { subject: 'History', subjectSlug: 'history', roi: 281, level: 'undergraduate' },
+];
+
+const mockSimilarUniversities = [
+  { id: '2', name: 'University of Cambridge', slug: 'cambridge', rank: 2, compositeScore: 12.05 },
+  { id: '3', name: 'Imperial College London', slug: 'imperial-college-london', rank: 3, compositeScore: 40.23 },
+  { id: '4', name: 'UCL', slug: 'ucl', rank: 4, compositeScore: 47.02 },
+  { id: '5', name: 'LSE', slug: 'lse', rank: 5, compositeScore: 57.05 },
+];
+
+export const mockUniversityData: Record<string, UniversityProfile> = {
+  oxford: {
+    id: '1',
+    rank: 1,
+    name: 'University of Oxford',
+    slug: 'oxford',
+    region: 'South East',
+    compositeScore: 10.48,
+    percentBetterThanMedian: 98.85,
+    lifetimeNetGain2026: 347100,
+    roiMultiplier: 3.56,
+    studentSatisfaction: 89,
+    graduateEmploymentRate: 94,
+    averageSalary5Years: 42000,
+    description:
+      'Where thousand-year-old traditions meet world-shaping innovation. Oxford’s collegiate system creates intimate learning communities within a globally revered institution. From the Bodleian’s whispered archives to gleaming new science centres, every corner sparks excellence. Graduates leave with more than knowledge—they carry an indelible mark of intellectual rigour that opens doors everywhere. The ultimate ROI reflects this: £347,100 lifetime premium.',
+    heroImageUrl: '/images/universities/oxford-hero.jpg',
+    galleryImages: [
+      '/images/universities/oxford-1.jpg',
+      '/images/universities/oxford-2.jpg',
+      '/images/universities/oxford-3.jpg',
+    ],
+    subjectStrengths: mockSubjectStrengthsOxford,
+    earningsTrajectory: mockEarningsTrajectory,
+    similarUniversities: mockSimilarUniversities,
+    founded: 1096,
+    totalStudents: 24000,
+    internationalStudentPercentage: 42,
+    costOfLivingIndex: 115,
+  },
+  // Add more universities as needed...
+};
+// lib/api.ts
+
+import { UniversityProfile } from '@/types/university';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
+
+export async function fetchUniversityBySlug(slug: string): Promise<UniversityProfile | null> {
+  try {
+    const res = await fetch(`${API_BASE}/university/${slug}`);
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(`Failed to fetch university: ${res.statusText}`);
+    }
+    return await res.json();
+  } catch (error) {
+    console.error('Error fetching university:', error);
+    return null;
+  }
+}
+// app/api/university/[slug]/route.ts
+
+import { NextRequest, NextResponse } from 'next/server';
+import { mockUniversityData } from '@/data/mockUniversityData';
+
+// In a real app, this would call your FastAPI backend
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { slug: string } }
+) {
+  const { slug } = params;
+  const university = mockUniversityData[slug];
+
+  if (!university) {
+    return NextResponse.json({ error: 'University not found' }, { status: 404 });
+  }
+
+  // Simulate network delay
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  return NextResponse.json(university);
+}
+// components/ui/Card.tsx
+
+import React from 'react';
+import { cn } from '@/lib/utils'; // optional utility for class merging
+
+interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+  children: React.ReactNode;
+  padding?: 'none' | 'sm' | 'md' | 'lg';
+  shadow?: 'none' | 'sm' | 'md' | 'lg';
+  hover?: boolean;
+}
+
+const paddingClasses = {
+  none: '',
+  sm: 'p-4',
+  md: 'p-6',
+  lg: 'p-8',
+};
+
+const shadowClasses = {
+  none: '',
+  sm: 'shadow-sm',
+  md: 'shadow-md',
+  lg: 'shadow-lg',
+};
+
+export const Card: React.FC<CardProps> = ({
+  children,
+  padding = 'md',
+  shadow = 'md',
+  hover = false,
+  className,
+  ...props
+}) => {
+  return (
+    <div
+      className={cn(
+        'bg-white rounded-lg transition-all duration-300',
+        paddingClasses[padding],
+        shadowClasses[shadow],
+        hover && 'hover:shadow-lg hover:-translate-y-1',
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+};
+// components/ui/Badge.tsx
+
+import React from 'react';
+import { cn } from '@/lib/utils';
+
+interface BadgeProps {
+  children: React.ReactNode;
+  variant?: 'default' | 'success' | 'warning' | 'info' | 'sponsored';
+  size?: 'sm' | 'md';
+  className?: string;
+}
+
+const variantClasses = {
+  default: 'bg-soft-grey text-charcoal',
+  success: 'bg-mint-frost text-deep-navy',
+  warning: 'bg-buttercream text-deep-navy',
+  info: 'bg-lavender-mist text-deep-navy',
+  sponsored: 'bg-blush-pink text-deep-navy',
+};
+
+const sizeClasses = {
+  sm: 'px-2 py-0.5 text-xs',
+  md: 'px-3 py-1 text-sm',
+};
+
+export const Badge: React.FC<BadgeProps> = ({
+  children,
+  variant = 'default',
+  size = 'md',
+  className,
+}) => {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full font-medium',
+        variantClasses[variant],
+        sizeClasses[size],
+        className
+      )}
+    >
+      {children}
+    </span>
+  );
+};
+// components/ui/Spinner.tsx
+
+import React from 'react';
+import { cn } from '@/lib/utils';
+
+interface SpinnerProps {
+  size?: 'sm' | 'md' | 'lg';
+  className?: string;
+}
+
+const sizeClasses = {
+  sm: 'w-4 h-4',
+  md: 'w-8 h-8',
+  lg: 'w-12 h-12',
+};
+
+export const Spinner: React.FC<SpinnerProps> = ({ size = 'md', className }) => {
+  return (
+    <div role="status">
+      <svg
+        className={cn(
+          'animate-spin text-soft-grey',
+          sizeClasses[size],
+          className
+        )}
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+      >
+        <circle
+          className="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          strokeWidth="4"
+        />
+        <path
+          className="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+        />
+      </svg>
+      <span className="sr-only">Loading...</span>
+    </div>
+  );
+};
+// components/university/ProfileHeader.tsx
+
+import React from 'react';
+import Image from 'next/image';
+import { UniversityProfile } from '@/types/university';
+import { Badge } from '@/components/ui/Badge';
+import PinterestButton from './PinterestButton';
+import { formatCurrency, formatPercentage } from '@/utils/format';
+
+interface ProfileHeaderProps {
+  university: UniversityProfile;
+}
+
+export const ProfileHeader: React.FC<ProfileHeaderProps> = ({ university }) => {
+  return (
+    <div className="relative mb-8">
+      {/* Hero Image with overlay */}
+      <div className="relative h-80 md:h-96 w-full overflow-hidden rounded-xl">
+        {university.heroImageUrl ? (
+          <Image
+            src={university.heroImageUrl}
+            alt={university.name}
+            fill
+            className="object-cover"
+            priority
+          />
+        ) : (
+          <div className="absolute inset-0 bg-gradient-to-r from-deep-navy to-midnight-teal" />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-deep-navy/80 via-transparent to-transparent" />
+
+        {/* Title and badge overlay */}
+        <div className="absolute bottom-0 left-0 p-6 md:p-8 text-white">
+          <div className="flex items-center gap-3 mb-2">
+            <Badge variant="info" size="sm" className="bg-white/20 text-white">
+              Rank #{university.rank}
+            </Badge>
+            <Badge variant="success" size="sm" className="bg-tropical-turquoise/80 text-white">
+              ROI {formatPercentage(university.roiMultiplier * 100)} lifetime
+            </Badge>
+          </div>
+          <h1 className="font-heading text-4xl md:text-5xl font-bold mb-2">
+            {university.name}
+          </h1>
+          <p className="text-lg md:text-xl text-white/90 max-w-2xl">
+            {university.region} · {university.founded && `Founded ${university.founded}`}
+          </p>
+        </div>
+
+        {/* Pinterest button (top right) */}
+        <div className="absolute top-4 right-4">
+          <PinterestButton universityName={university.name} />
+        </div>
+      </div>
+
+      {/* Quick facts row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-soft-grey">
+          <p className="text-sm text-slate">Lifetime net gain</p>
+          <p className="text-2xl font-mono text-tropical-turquoise font-semibold">
+            {formatCurrency(university.lifetimeNetGain2026)}
+          </p>
+          <p className="text-xs text-slate">(2026 money)</p>
+        </div>
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-soft-grey">
+          <p className="text-sm text-slate">Composite score</p>
+          <p className="text-2xl font-mono text-midnight-teal font-semibold">
+            {university.compositeScore.toFixed(1)}
+          </p>
+          <p className="text-xs text-slate">
+            {university.percentBetterThanMedian > 0 ? '+' : ''}
+            {university.percentBetterThanMedian.toFixed(1)}% vs median
+          </p>
+        </div>
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-soft-grey">
+          <p className="text-sm text-slate">Employability (15 mo)</p>
+          <p className="text-2xl font-mono text-midnight-teal font-semibold">
+            {university.graduateEmploymentRate}%
+          </p>
+          <p className="text-xs text-slate">Avg salary 5y: {formatCurrency(university.averageSalary5Years)}</p>
+        </div>
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-soft-grey">
+          <p className="text-sm text-slate">Student satisfaction</p>
+          <p className="text-2xl font-mono text-midnight-teal font-semibold">
+            {university.studentSatisfaction}%
+          </p>
+          <p className="text-xs text-slate">out of 100</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+// components/university/KeyStats.tsx
+
+import React from 'react';
+import { UniversityProfile } from '@/types/university';
+import { Card } from '@/components/ui/Card';
+import { formatCurrency, formatPercentage, formatCompactNumber } from '@/utils/format';
+
+interface KeyStatsProps {
+  university: UniversityProfile;
+}
+
+export const KeyStats: React.FC<KeyStatsProps> = ({ university }) => {
+  const stats = [
+    {
+      label: 'Total students',
+      value: formatCompactNumber(university.totalStudents || 0),
+      tooltip: 'Undergraduate and postgraduate',
+    },
+    {
+      label: 'International students',
+      value: `${university.internationalStudentPercentage || 0}%`,
+      tooltip: 'Percentage of students from outside UK',
+    },
+    {
+      label: 'Cost of living index',
+      value: `${university.costOfLivingIndex || 100}`,
+      tooltip: 'Relative to UK average (100)',
+    },
+    {
+      label: 'ROI multiplier',
+      value: university.roiMultiplier.toFixed(2) + '×',
+      tooltip: 'Compared to median university',
+    },
+  ];
+
+  return (
+    <Card className="mt-8">
+      <h2 className="font-heading text-2xl text-deep-navy mb-4">Key statistics</h2>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+        {stats.map((stat) => (
+          <div key={stat.label} className="text-center group relative">
+            <p className="text-sm text-slate mb-1">{stat.label}</p>
+            <p className="text-3xl font-mono text-midnight-teal font-semibold">
+              {stat.value}
+            </p>
+            {stat.tooltip && (
+              <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 hidden group-hover:block bg-charcoal text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                {stat.tooltip}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+};
+// components/university/SubjectStrengthHeatmap.tsx
+
+import React from 'react';
+import { SubjectStrength } from '@/types/university';
+import { Card } from '@/components/ui/Card';
+import { Badge } from '@/components/ui/Badge';
+import { formatPercentage } from '@/utils/format';
+
+interface SubjectStrengthHeatmapProps {
+  subjects: SubjectStrength[];
+  limit?: number;
+}
+
+export const SubjectStrengthHeatmap: React.FC<SubjectStrengthHeatmapProps> = ({
+  subjects,
+  limit = 8,
+}) => {
+  // Sort by ROI descending
+  const topSubjects = [...subjects]
+    .sort((a, b) => b.roi - a.roi)
+    .slice(0, limit);
+
+  // Find max ROI for color scaling
+  const maxROI = Math.max(...topSubjects.map((s) => s.roi));
+
+  const getIntensityClass = (roi: number) => {
+    const intensity = roi / maxROI; // 0 to 1
+    if (intensity > 0.8) return 'bg-tropical-turquoise/30 border-tropical-turquoise';
+    if (intensity > 0.6) return 'bg-caribbean-cyan/20 border-caribbean-cyan';
+    if (intensity > 0.4) return 'bg-seafoam-mint/20 border-seafoam-mint';
+    return 'bg-soft-grey/30 border-soft-grey';
+  };
+
+  return (
+    <Card className="mt-8">
+      <h2 className="font-heading text-2xl text-deep-navy mb-4">Top subject strengths</h2>
+      <div className="space-y-3">
+        {topSubjects.map((subject) => (
+          <div
+            key={subject.subjectSlug}
+            className={`flex items-center justify-between p-3 rounded-lg border ${getIntensityClass(
+              subject.roi
+            )}`}
+          >
+            <div className="flex items-center gap-3">
+              <span className="font-medium text-charcoal">{subject.subject}</span>
+              <Badge size="sm" variant="info">
+                {subject.level === 'undergraduate' ? 'BA/BSc' : subject.level}
+              </Badge>
+            </div>
+            <span className="font-mono text-midnight-teal font-semibold">
+              {formatPercentage(subject.roi)} ROI
+            </span>
+          </div>
+        ))}
+      </div>
+      {subjects.length > limit && (
+        <p className="text-sm text-slate mt-4 text-center">
+          + {subjects.length - limit} more subjects
+        </p>
+      )}
+    </Card>
+  );
+};
+// components/university/ROIChart.tsx
+
+'use client';
+
+import React, { useEffect, useRef } from 'react';
+import * as d3 from 'd3';
+import { EarningsPoint } from '@/types/university';
+import { Card } from '@/components/ui/Card';
+import { formatCurrency } from '@/utils/format';
+
+interface ROIChartProps {
+  data: EarningsPoint[];
+  universityName: string;
+}
+
+export const ROIChart: React.FC<ROIChartProps> = ({ data, universityName }) => {
+  const chartRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    if (!chartRef.current || !data.length) return;
+
+    const svg = d3.select(chartRef.current);
+    svg.selectAll('*').remove(); // clear previous
+
+    const margin = { top: 20, right: 30, bottom: 40, left: 60 };
+    const width = chartRef.current.clientWidth - margin.left - margin.right;
+    const height = 300 - margin.top - margin.bottom;
+
+    const g = svg
+      .append('g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+    // Scales
+    const x = d3
+      .scaleLinear()
+      .domain(d3.extent(data, (d) => d.year) as [number, number])
+      .range([0, width]);
+
+    const y = d3
+      .scaleLinear()
+      .domain([0, d3.max(data, (d) => d.earnings) as number])
+      .nice()
+      .range([height, 0]);
+
+    // Line generator
+    const line = d3
+      .line<EarningsPoint>()
+      .x((d) => x(d.year))
+      .y((d) => y(d.earnings))
+      .curve(d3.curveMonotoneX);
+
+    // Add the line path
+    g.append('path')
+      .datum(data)
+      .attr('fill', 'none')
+      .attr('stroke', '#2AC3B4') // tropical turquoise
+      .attr('stroke-width', 3)
+      .attr('d', line);
+
+    // Add dots
+    g.selectAll('circle')
+      .data(data)
+      .enter()
+      .append('circle')
+      .attr('cx', (d) => x(d.year))
+      .attr('cy', (d) => y(d.earnings))
+      .attr('r', 5)
+      .attr('fill', '#0F7B6B')
+      .attr('stroke', 'white')
+      .attr('stroke-width', 2);
+
+    // X axis
+    g.append('g')
+      .attr('transform', `translate(0,${height})`)
+      .call(d3.axisBottom(x).tickFormat(d3.format('d')));
+
+    // Y axis
+    g.append('g')
+      .call(d3.axisLeft(y).tickFormat((d) => formatCurrency(d as number)));
+
+    // Labels
+    g.append('text')
+      .attr('x', width / 2)
+      .attr('y', height + margin.bottom - 5)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#5A6874')
+      .attr('font-size', '12px')
+      .text('Years after graduation');
+
+    g.append('text')
+      .attr('transform', 'rotate(-90)')
+      .attr('x', -height / 2)
+      .attr('y', -margin.left + 15)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#5A6874')
+      .attr('font-size', '12px')
+      .text('Annual earnings (GBP)');
+
+    // Tooltip (optional, can be enhanced)
+  }, [data]);
+
+  return (
+    <Card className="mt-8">
+      <h2 className="font-heading text-2xl text-deep-navy mb-4">
+        Earnings trajectory – {universityName} graduates
+      </h2>
+      <div className="w-full overflow-x-auto">
+        <svg ref={chartRef} width="100%" height="300" style={{ display: 'block' }} />
+      </div>
+      <p className="text-sm text-slate mt-4">
+        Projected earnings over a 40‑year career, compared to non‑graduate baseline.
+      </p>
+    </Card>
+  );
+};
+// components/university/SimilarUniversities.tsx
+
+import React from 'react';
+import Link from 'next/link';
+import { SimilarUniversity } from '@/types/university';
+import { Card } from '@/components/ui/Card';
+
+interface SimilarUniversitiesProps {
+  universities: SimilarUniversity[];
+}
+
+export const SimilarUniversities: React.FC<SimilarUniversitiesProps> = ({
+  universities,
+}) => {
+  return (
+    <Card className="mt-8">
+      <h2 className="font-heading text-2xl text-deep-navy mb-4">Similar universities</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {universities.map((uni) => (
+          <Link
+            key={uni.id}
+            href={`/${uni.slug}`}
+            className="group block p-4 rounded-lg border border-soft-grey hover:border-tropical-turquoise transition-colors"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium text-charcoal group-hover:text-tropical-turquoise">
+                  {uni.name}
+                </h3>
+                <p className="text-sm text-slate">Rank #{uni.rank}</p>
+              </div>
+              <div className="text-right font-mono text-midnight-teal">
+                <span className="block text-lg font-semibold">
+                  {uni.compositeScore.toFixed(1)}
+                </span>
+                <span className="text-xs text-slate">composite</span>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </Card>
+  );
+};
+// components/university/PinterestButton.tsx
+
+import React from 'react';
+
+interface PinterestButtonProps {
+  universityName: string;
+  variant?: 'primary' | 'pill';
+}
+
+const PinterestButton: React.FC<PinterestButtonProps> = ({
+  universityName,
+  variant = 'primary',
+}) => {
+  const searchQuery = encodeURIComponent(`${universityName} university aesthetic`);
+  const href = `https://www.pinterest.com/search/pins/?q=${searchQuery}`;
+
+  const baseClasses =
+    'inline-flex items-center gap-2 transition-all duration-300 font-medium';
+
+  const variants = {
+    primary:
+      'bg-gradient-to-r from-deep-navy to-midnight-teal border-2 border-[#E60023] text-white rounded-full px-6 py-3 shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:border-[#BD081C]',
+    pill: 'bg-white/95 backdrop-blur-sm border border-soft-grey rounded-full px-4 py-2 text-midnight-teal text-sm hover:border-[#E60023] hover:text-[#BD081C]',
+  };
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`${baseClasses} ${variants[variant]}`}
+    >
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" fill="#E60023" />
+        <path
+          d="M12 5C8.5 5 6 7.5 6 11c0 2.5 1.5 4.5 3.5 5.2 0-0.4 0-0.8 0.1-1.2 0.1-0.4 0.7-2.8 0.7-2.8s-0.2-0.4-0.2-1c0-1 0.6-1.7 1.3-1.7 0.6 0 0.9 0.4 0.9 1 0 0.6-0.4 1.5-0.6 2.3-0.2 0.7 0.3 1.3 1 1.3 1.2 0 2.1-1.3 2.1-3.2 0-1.7-1.2-2.9-3-2.9-2 0-3.2 1.5-3.2 3.1 0 0.6 0.2 1.2 0.6 1.6 0.1 0.1 0.1 0.2 0.1 0.3-0.1 0.3-0.2 0.9-0.2 1-0.1 0.2-0.2 0.3-0.4 0.2-1-0.5-1.6-1.8-1.6-3 0-2.4 1.8-4.7 5.1-4.7 2.7 0 4.8 1.9 4.8 4.5 0 2.7-1.7 4.8-4 4.8-0.8 0-1.5-0.4-1.8-0.9 0 0-0.4 1.6-0.5 2-0.2 0.7-0.6 1.4-1 2 1.1 0.3 2.2 0.5 3.3 0.5 3.5 0 6-2.5 6-6 0-3.5-2.5-6-6-6z"
+          fill="white"
+        />
+      </svg>
+      <span>{universityName} aesthetic on Pinterest</span>
+    </a>
+  );
+};
+
+export default PinterestButton;
+// app/[university]/page.tsx
+
+import { notFound } from 'next/navigation';
+import { fetchUniversityBySlug } from '@/lib/api';
+import { ProfileHeader } from '@/components/university/ProfileHeader';
+import { KeyStats } from '@/components/university/KeyStats';
+import { SubjectStrengthHeatmap } from '@/components/university/SubjectStrengthHeatmap';
+import { ROIChart } from '@/components/university/ROIChart';
+import { SimilarUniversities } from '@/components/university/SimilarUniversities';
+import { Metadata } from 'next';
+
+interface PageProps {
+  params: { university: string };
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const university = await fetchUniversityBySlug(params.university);
+  if (!university) return { title: 'University not found' };
+  return {
+    title: `${university.name} ROI & Profile | ediguide`,
+    description: university.description.slice(0, 160),
+  };
+}
+
+export default async function UniversityPage({ params }: PageProps) {
+  const university = await fetchUniversityBySlug(params.university);
+
+  if (!university) {
+    notFound();
+  }
+
+  return (
+    <main className="container mx-auto px-4 py-8 max-w-7xl">
+      <ProfileHeader university={university} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-8">
+        {/* Left column: description + key stats + heatmap */}
+        <div className="lg:col-span-2 space-y-8">
+          <section className="prose prose-lg max-w-none text-charcoal">
+            <p>{university.description}</p>
+          </section>
+
+          <KeyStats university={university} />
+
+          <SubjectStrengthHeatmap subjects={university.subjectStrengths} />
+
+          {/* Additional info: gallery placeholders */}
+          {university.galleryImages && university.galleryImages.length > 0 && (
+            <div className="mt-8">
+              <h2 className="font-heading text-2xl text-deep-navy mb-4">Campus gallery</h2>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {university.galleryImages.map((img, idx) => (
+                  <div key={idx} className="aspect-w-16 aspect-h-9 rounded-lg overflow-hidden">
+                    {/* Replace with Next/Image when real images exist */}
+                    <div
+                      className="w-full h-full bg-cover bg-center"
+                      style={{ backgroundImage: `url(${img})` }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right column: chart + similar unis */}
+        <div className="space-y-8">
+          <ROIChart data={university.earningsTrajectory} universityName={university.name} />
+          <SimilarUniversities universities={university.similarUniversities} />
+        </div>
+      </div>
+    </main>
+  );
+}
+/* styles/globals.css */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Primary ocean palette */
+    --deep-navy: #0b2d4a;
+    --midnight-teal: #1a5f6b;
+    --tropical-turquoise: #2ac3b4;
+    --caribbean-cyan: #6cd4c9;
+    --seafoam-mint: #b8e6de;
+
+    /* Pastels */
+    --blush-pink: #ffd9d9;
+    --lavender-mist: #e2d1ff;
+    --buttercream: #fff2cc;
+    --coral-kiss: #ffc4b3;
+    --mint-frost: #d4f0f0;
+
+    /* Neutrals */
+    --off-white: #f9fbfd;
+    --soft-grey: #e5e9f0;
+    --slate: #5a6874;
+    --charcoal: #1e2a36;
+
+    /* Gradients */
+    --ocean-sunrise: linear-gradient(135deg, #0b2d4a 0%, #1a5f6b 50%, #2ac3b4 100%);
+    --turquoise-dream: linear-gradient(120deg, #2ac3b4 0%, #6cd4c9 70%, #b8e6de 100%);
+    --pastel-horizon: linear-gradient(45deg, #ffd9d9 0%, #e2d1ff 50%, #d4f0f0 100%);
+
+    /* Spacing */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --space-7: 48px;
+    --space-8: 64px;
+    --space-9: 96px;
+
+    /* Border radius */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+    --radius-full: 9999px;
+
+    /* Shadows */
+    --shadow-sm: 0 2px 8px rgba(10, 45, 65, 0.05);
+    --shadow-md: 0 10px 30px -10px rgba(10, 45, 65, 0.1);
+    --shadow-lg: 0 20px 40px -15px rgba(10, 45, 65, 0.15);
+    --shadow-hover: 0 30px 50px -20px rgba(10, 45, 65, 0.2);
+  }
+
+  body {
+    @apply bg-off-white text-charcoal font-body;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-heading;
+  }
+}
+
+@layer utilities {
+  .font-heading {
+    font-family: 'Playfair Display', serif;
+  }
+  .font-body {
+    font-family: 'Inter', sans-serif;
+  }
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+// tailwind.config.js
+
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    './app/**/*.{js,ts,jsx,tsx}',
+    './components/**/*.{js,ts,jsx,tsx}',
+    './pages/**/*.{js,ts,jsx,tsx}',
+  ],
+  theme: {
+    extend: {
+      colors: {
+        'deep-navy': '#0B2D4A',
+        'midnight-teal': '#1A5F6B',
+        'tropical-turquoise': '#2AC3B4',
+        'caribbean-cyan': '#6CD4C9',
+        'seafoam-mint': '#B8E6DE',
+        'blush-pink': '#FFD9D9',
+        'lavender-mist': '#E2D1FF',
+        'buttercream': '#FFF2CC',
+        'coral-kiss': '#FFC4B3',
+        'mint-frost': '#D4F0F0',
+        'off-white': '#F9FBFD',
+        'soft-grey': '#E5E9F0',
+        'slate': '#5A6874',
+        'charcoal': '#1E2A36',
+      },
+      fontFamily: {
+        heading: ['Playfair Display', 'serif'],
+        body: ['Inter', 'sans-serif'],
+        mono: ['JetBrains Mono', 'monospace'],
+      },
+      backgroundImage: {
+        'ocean-sunrise':
+          'linear-gradient(135deg, #0B2D4A 0%, #1A5F6B 50%, #2AC3B4 100%)',
+        'turquoise-dream':
+          'linear-gradient(120deg, #2AC3B4 0%, #6CD4C9 70%, #B8E6DE 100%)',
+        'pastel-horizon':
+          'linear-gradient(45deg, #FFD9D9 0%, #E2D1FF 50%, #D4F0F0 100%)',
+      },
+      borderRadius: {
+        'xl': '1rem',
+        '2xl': '1.5rem',
+      },
+      boxShadow: {
+        'sm': '0 2px 8px rgba(10, 45, 65, 0.05)',
+        'md': '0 10px 30px -10px rgba(10, 45, 65, 0.1)',
+        'lg': '0 20px 40px -15px rgba(10, 45, 65, 0.15)',
+        'hover': '0 30px 50px -20px rgba(10, 45, 65, 0.2)',
+      },
+    },
+  },
+  plugins: [require('@tailwindcss/typography'), require('@tailwindcss/aspect-ratio')],
+};
+// lib/utils.ts
+
+import { ClassValue, clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+// utils/logger.ts
+
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+const isDev = process.env.NODE_ENV === 'development';
+
+export const logger = {
+  debug: (...args: any[]) => isDev && console.debug('[DEBUG]', ...args),
+  info: (...args: any[]) => console.info('[INFO]', ...args),
+  warn: (...args: any[]) => console.warn('[WARN]', ...args),
+  error: (...args: any[]) => console.error('[ERROR]', ...args),
+};
+{
+  "dependencies": {
+    "next": "14.x",
+    "react": "18.x",
+    "react-dom": "18.x",
+    "d3": "^7.8.5",
+    "@types/d3": "^7.4.3",
+    "clsx": "^2.1.0",
+    "tailwind-merge": "^2.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/typography": "^0.5.10",
+    "@tailwindcss/aspect-ratio": "^0.4.2",
+    "typescript": "^5.x"
+  }
+}

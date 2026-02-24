@@ -23973,3 +23973,1425 @@ class Partner(Base):
 // Lead Management Dashboard (Admin)
 // Ediguide Platform
 // Production-grade foundation
+# app/core/database.py
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from typing import Generator
+
+from app.core.config import settings
+
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    echo=settings.DEBUG_SQL,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+# app/models/affiliate.py
+from sqlalchemy import (
+    Column, String, Integer, Numeric, Boolean, DateTime, Text, ForeignKey,
+    Index, UniqueConstraint, CheckConstraint, BigInteger
+)
+from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+import uuid
+
+from app.core.database import Base
+
+class Affiliate(Base):
+    __tablename__ = "affiliates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    network = Column(String(100), nullable=True)  # e.g., 'awin', 'impact', 'direct'
+    network_id = Column(String(255), nullable=True)
+    commission_rate = Column(Numeric(5, 2), nullable=True)  # e.g., 5.00 for 5%
+    cookie_days = Column(Integer, default=30, nullable=False)
+    base_url = Column(Text, nullable=True)
+    active = Column(Boolean, default=True, nullable=False)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    links = relationship("AffiliateLink", back_populates="affiliate", cascade="all, delete-orphan")
+    clicks = relationship("AffiliateClick", back_populates="affiliate", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_affiliates_network", network),
+        Index("ix_affiliates_active", active),
+    )
+
+
+class AffiliateLink(Base):
+    __tablename__ = "affiliate_links"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    affiliate_id = Column(UUID(as_uuid=True), ForeignKey("affiliates.id", ondelete="CASCADE"), nullable=False)
+    category = Column(String(100), nullable=True)  # e.g., 'banking', 'accommodation', 'textbooks'
+    product_name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    destination_url = Column(Text, nullable=False)
+    tracking_param = Column(String(255), nullable=True)  # e.g., '?ref=ediguide'
+    click_count = Column(BigInteger, default=0, nullable=False)
+    conversion_count = Column(BigInteger, default=0, nullable=False)
+    revenue_generated = Column(Numeric(10, 2), default=0.0, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    affiliate = relationship("Affiliate", back_populates="links")
+    clicks = relationship("AffiliateClick", back_populates="link", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_affiliate_links_affiliate_id", affiliate_id),
+        Index("ix_affiliate_links_category", category),
+        Index("ix_affiliate_links_active", active),
+    )
+
+
+class AffiliateClick(Base):
+    __tablename__ = "affiliate_clicks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    link_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_links.id", ondelete="CASCADE"), nullable=False)
+    affiliate_id = Column(UUID(as_uuid=True), ForeignKey("affiliates.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=True)          # if logged in
+    session_id = Column(String(255), nullable=True)              # for anonymous tracking
+    ip_address = Column(INET, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    referer = Column(Text, nullable=True)
+    conversion_value = Column(Numeric(10, 2), nullable=True)     # if converted later
+    converted_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    link = relationship("AffiliateLink", back_populates="clicks")
+    affiliate = relationship("Affiliate", back_populates="clicks")
+
+    __table_args__ = (
+        Index("ix_affiliate_clicks_link_id", link_id),
+        Index("ix_affiliate_clicks_affiliate_id", affiliate_id),
+        Index("ix_affiliate_clicks_created_at", created_at),
+        Index("ix_affiliate_clicks_session_id", session_id),
+    )
+# app/schemas/affiliate.py
+from pydantic import BaseModel, Field, HttpUrl, condecimal
+from typing import Optional, List
+from uuid import UUID
+from datetime import datetime
+from decimal import Decimal
+
+# ---------- Affiliate ----------
+class AffiliateBase(BaseModel):
+    name: str = Field(..., max_length=255)
+    network: Optional[str] = Field(None, max_length=100)
+    network_id: Optional[str] = Field(None, max_length=255)
+    commission_rate: Optional[condecimal(max_digits=5, decimal_places=2)] = None
+    cookie_days: int = 30
+    base_url: Optional[HttpUrl] = None
+    active: bool = True
+
+class AffiliateCreate(AffiliateBase):
+    pass
+
+class AffiliateUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=255)
+    network: Optional[str] = Field(None, max_length=100)
+    network_id: Optional[str] = Field(None, max_length=255)
+    commission_rate: Optional[condecimal(max_digits=5, decimal_places=2)] = None
+    cookie_days: Optional[int] = None
+    base_url: Optional[HttpUrl] = None
+    active: Optional[bool] = None
+
+class AffiliateInDB(AffiliateBase):
+    id: UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class AffiliateOut(AffiliateInDB):
+    links_count: Optional[int] = 0
+    total_clicks: Optional[int] = 0
+    total_revenue: Optional[Decimal] = 0
+
+# ---------- AffiliateLink ----------
+class AffiliateLinkBase(BaseModel):
+    affiliate_id: UUID
+    category: Optional[str] = Field(None, max_length=100)
+    product_name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    destination_url: HttpUrl
+    tracking_param: Optional[str] = Field(None, max_length=255)
+    active: bool = True
+
+class AffiliateLinkCreate(AffiliateLinkBase):
+    pass
+
+class AffiliateLinkUpdate(BaseModel):
+    category: Optional[str] = Field(None, max_length=100)
+    product_name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    destination_url: Optional[HttpUrl] = None
+    tracking_param: Optional[str] = Field(None, max_length=255)
+    active: Optional[bool] = None
+
+class AffiliateLinkInDB(AffiliateLinkBase):
+    id: UUID
+    click_count: int
+    conversion_count: int
+    revenue_generated: Decimal
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class AffiliateLinkOut(AffiliateLinkInDB):
+    affiliate_name: Optional[str] = None
+
+# ---------- AffiliateClick ----------
+class AffiliateClickBase(BaseModel):
+    link_id: UUID
+    affiliate_id: UUID
+    user_id: Optional[UUID] = None
+    session_id: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    referer: Optional[str] = None
+
+class AffiliateClickCreate(AffiliateClickBase):
+    pass
+
+class AffiliateClickInDB(AffiliateClickBase):
+    id: UUID
+    conversion_value: Optional[Decimal] = None
+    converted_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class AffiliateClickOut(AffiliateClickInDB):
+    link_product_name: Optional[str] = None
+    affiliate_name: Optional[str] = None
+
+# ---------- Conversion tracking ----------
+class ConversionTrack(BaseModel):
+    click_id: UUID
+    order_value: Decimal = Field(..., ge=0)
+    order_id: Optional[str] = None
+# app/repositories/affiliate.py
+from sqlalchemy.orm import Session
+from sqlalchemy import func, desc, and_
+from typing import Optional, List, Tuple
+from uuid import UUID
+from decimal import Decimal
+
+from app.models.affiliate import Affiliate, AffiliateLink, AffiliateClick
+from app.schemas.affiliate import (
+    AffiliateCreate, AffiliateUpdate,
+    AffiliateLinkCreate, AffiliateLinkUpdate,
+    AffiliateClickCreate
+)
+
+class AffiliateRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    # ---------- Affiliate ----------
+    def create_affiliate(self, data: AffiliateCreate) -> Affiliate:
+        affiliate = Affiliate(**data.model_dump())
+        self.db.add(affiliate)
+        self.db.commit()
+        self.db.refresh(affiliate)
+        return affiliate
+
+    def get_affiliate(self, affiliate_id: UUID) -> Optional[Affiliate]:
+        return self.db.query(Affiliate).filter(Affiliate.id == affiliate_id).first()
+
+    def get_affiliate_by_name(self, name: str) -> Optional[Affiliate]:
+        return self.db.query(Affiliate).filter(Affiliate.name == name).first()
+
+    def get_affiliates(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        active_only: bool = False,
+        network: Optional[str] = None,
+    ) -> Tuple[List[Affiliate], int]:
+        query = self.db.query(Affiliate)
+        if active_only:
+            query = query.filter(Affiliate.active == True)
+        if network:
+            query = query.filter(Affiliate.network == network)
+        total = query.count()
+        affiliates = query.order_by(Affiliate.created_at.desc()).offset(skip).limit(limit).all()
+        return affiliates, total
+
+    def update_affiliate(self, affiliate: Affiliate, data: AffiliateUpdate) -> Affiliate:
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(affiliate, field, value)
+        self.db.commit()
+        self.db.refresh(affiliate)
+        return affiliate
+
+    def delete_affiliate(self, affiliate: Affiliate) -> None:
+        self.db.delete(affiliate)
+        self.db.commit()
+
+    # ---------- AffiliateLink ----------
+    def create_link(self, data: AffiliateLinkCreate) -> AffiliateLink:
+        link = AffiliateLink(**data.model_dump())
+        self.db.add(link)
+        self.db.commit()
+        self.db.refresh(link)
+        return link
+
+    def get_link(self, link_id: UUID) -> Optional[AffiliateLink]:
+        return self.db.query(AffiliateLink).filter(AffiliateLink.id == link_id).first()
+
+    def get_links(
+        self,
+        affiliate_id: Optional[UUID] = None,
+        category: Optional[str] = None,
+        active_only: bool = False,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> Tuple[List[AffiliateLink], int]:
+        query = self.db.query(AffiliateLink)
+        if affiliate_id:
+            query = query.filter(AffiliateLink.affiliate_id == affiliate_id)
+        if category:
+            query = query.filter(AffiliateLink.category == category)
+        if active_only:
+            query = query.filter(AffiliateLink.active == True)
+        total = query.count()
+        links = query.order_by(AffiliateLink.created_at.desc()).offset(skip).limit(limit).all()
+        return links, total
+
+    def update_link(self, link: AffiliateLink, data: AffiliateLinkUpdate) -> AffiliateLink:
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(link, field, value)
+        self.db.commit()
+        self.db.refresh(link)
+        return link
+
+    def delete_link(self, link: AffiliateLink) -> None:
+        self.db.delete(link)
+        self.db.commit()
+
+    def increment_link_click(self, link_id: UUID) -> None:
+        self.db.query(AffiliateLink).filter(AffiliateLink.id == link_id).update(
+            {AffiliateLink.click_count: AffiliateLink.click_count + 1}
+        )
+        self.db.commit()
+
+    # ---------- AffiliateClick ----------
+    def create_click(self, data: AffiliateClickCreate) -> AffiliateClick:
+        click = AffiliateClick(**data.model_dump())
+        self.db.add(click)
+        self.db.commit()
+        self.db.refresh(click)
+        return click
+
+    def get_click(self, click_id: UUID) -> Optional[AffiliateClick]:
+        return self.db.query(AffiliateClick).filter(AffiliateClick.id == click_id).first()
+
+    def get_clicks(
+        self,
+        affiliate_id: Optional[UUID] = None,
+        link_id: Optional[UUID] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> Tuple[List[AffiliateClick], int]:
+        query = self.db.query(AffiliateClick)
+        if affiliate_id:
+            query = query.filter(AffiliateClick.affiliate_id == affiliate_id)
+        if link_id:
+            query = query.filter(AffiliateClick.link_id == link_id)
+        if start_date:
+            query = query.filter(AffiliateClick.created_at >= start_date)
+        if end_date:
+            query = query.filter(AffiliateClick.created_at <= end_date)
+        total = query.count()
+        clicks = query.order_by(AffiliateClick.created_at.desc()).offset(skip).limit(limit).all()
+        return clicks, total
+
+    def mark_conversion(self, click_id: UUID, order_value: Decimal) -> Optional[AffiliateClick]:
+        click = self.get_click(click_id)
+        if not click:
+            return None
+        click.conversion_value = order_value
+        click.converted_at = func.now()
+        # Also update link revenue
+        link = click.link
+        if link:
+            link.conversion_count += 1
+            link.revenue_generated += order_value
+        self.db.commit()
+        self.db.refresh(click)
+        return click
+# app/services/affiliate.py
+from sqlalchemy.orm import Session
+from uuid import UUID, uuid4
+from typing import Optional, Dict, Any
+from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+import logging
+
+from app.repositories.affiliate import AffiliateRepository
+from app.schemas.affiliate import (
+    AffiliateCreate, AffiliateUpdate,
+    AffiliateLinkCreate, AffiliateLinkUpdate,
+    AffiliateClickCreate, ConversionTrack
+)
+from app.models.affiliate import Affiliate, AffiliateLink
+
+logger = logging.getLogger(__name__)
+
+class AffiliateService:
+    def __init__(self, db: Session):
+        self.repo = AffiliateRepository(db)
+
+    # ---------- Affiliate ----------
+    def create_affiliate(self, data: AffiliateCreate) -> Affiliate:
+        # Optional: check for duplicate name
+        existing = self.repo.get_affiliate_by_name(data.name)
+        if existing:
+            raise ValueError(f"Affiliate with name '{data.name}' already exists")
+        return self.repo.create_affiliate(data)
+
+    def get_affiliate(self, affiliate_id: UUID) -> Optional[Affiliate]:
+        return self.repo.get_affiliate(affiliate_id)
+
+    def get_affiliates(self, skip: int = 0, limit: int = 100, active_only: bool = False, network: Optional[str] = None):
+        return self.repo.get_affiliates(skip, limit, active_only, network)
+
+    def update_affiliate(self, affiliate_id: UUID, data: AffiliateUpdate) -> Optional[Affiliate]:
+        affiliate = self.repo.get_affiliate(affiliate_id)
+        if not affiliate:
+            return None
+        return self.repo.update_affiliate(affiliate, data)
+
+    def delete_affiliate(self, affiliate_id: UUID) -> bool:
+        affiliate = self.repo.get_affiliate(affiliate_id)
+        if not affiliate:
+            return False
+        self.repo.delete_affiliate(affiliate)
+        return True
+
+    # ---------- Links ----------
+    def create_link(self, data: AffiliateLinkCreate) -> AffiliateLink:
+        # Ensure affiliate exists
+        affiliate = self.repo.get_affiliate(data.affiliate_id)
+        if not affiliate:
+            raise ValueError("Affiliate not found")
+        return self.repo.create_link(data)
+
+    def get_link(self, link_id: UUID) -> Optional[AffiliateLink]:
+        return self.repo.get_link(link_id)
+
+    def get_links(self, affiliate_id: Optional[UUID] = None, category: Optional[str] = None, active_only: bool = False, skip: int = 0, limit: int = 100):
+        return self.repo.get_links(affiliate_id, category, active_only, skip, limit)
+
+    def update_link(self, link_id: UUID, data: AffiliateLinkUpdate) -> Optional[AffiliateLink]:
+        link = self.repo.get_link(link_id)
+        if not link:
+            return None
+        return self.repo.update_link(link, data)
+
+    def delete_link(self, link_id: UUID) -> bool:
+        link = self.repo.get_link(link_id)
+        if not link:
+            return False
+        self.repo.delete_link(link)
+        return True
+
+    # ---------- Click Tracking ----------
+    def track_click(
+        self,
+        link_id: UUID,
+        *,
+        user_id: Optional[UUID] = None,
+        session_id: Optional[str] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        referer: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Record a click and return the destination URL (with affiliate parameters if any).
+        """
+        link = self.repo.get_link(link_id)
+        if not link or not link.active:
+            logger.warning(f"Attempt to click inactive or non-existent link {link_id}")
+            return None
+
+        affiliate = link.affiliate
+        if not affiliate or not affiliate.active:
+            logger.warning(f"Affiliate for link {link_id} is inactive")
+            return None
+
+        # Increment click count
+        self.repo.increment_link_click(link_id)
+
+        # Create click record
+        click_data = AffiliateClickCreate(
+            link_id=link_id,
+            affiliate_id=affiliate.id,
+            user_id=user_id,
+            session_id=session_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            referer=referer,
+        )
+        click = self.repo.create_click(click_data)
+
+        # Build destination URL with tracking param (if any)
+        dest_url = link.destination_url
+        if affiliate.base_url:
+            # Some affiliates require base URL + link specific path; here we assume link.destination_url is full.
+            pass
+
+        # Add tracking parameters if defined
+        if affiliate.network_id and link.tracking_param:
+            # Example: append ?ref=affiliate_network&click_id=...
+            parsed = urlparse(dest_url)
+            query = parse_qs(parsed.query)
+            # Add network-specific click ID if needed; we use our own click ID for server-side conversion tracking.
+            # For simplicity, we add a parameter with the click ID so the partner can notify us.
+            # In practice, you'd integrate with affiliate network's API.
+            query['ediguide_click'] = [str(click.id)]
+            new_query = urlencode(query, doseq=True)
+            dest_url = urlunparse(parsed._replace(query=new_query))
+
+        return {
+            "destination_url": dest_url,
+            "click_id": click.id,
+            "affiliate_name": affiliate.name,
+            "product_name": link.product_name,
+        }
+
+    def record_conversion(self, data: ConversionTrack) -> bool:
+        """
+        Called when an affiliate network pings us about a conversion, or via post-purchase.
+        """
+        click = self.repo.mark_conversion(data.click_id, data.order_value)
+        if click:
+            logger.info(f"Conversion recorded for click {data.click_id}, value {data.order_value}")
+            return True
+        logger.warning(f"Click {data.click_id} not found for conversion")
+        return False
+
+    # ---------- Utility ----------
+    def get_affiliate_stats(self, affiliate_id: UUID) -> Dict[str, Any]:
+        affiliate = self.repo.get_affiliate(affiliate_id)
+        if not affiliate:
+            return {}
+        clicks, _ = self.repo.get_clicks(affiliate_id=affiliate_id)
+        total_clicks = len(clicks)
+        conversions = sum(1 for c in clicks if c.converted_at is not None)
+        revenue = sum(c.conversion_value or 0 for c in clicks)
+        return {
+            "affiliate_id": affiliate_id,
+            "name": affiliate.name,
+            "total_clicks": total_clicks,
+            "conversions": conversions,
+            "revenue": revenue,
+        }
+# app/api/v1/endpoints/affiliates.py
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from uuid import UUID
+
+from app.core.database import get_db
+from app.services.affiliate import AffiliateService
+from app.schemas.affiliate import (
+    AffiliateCreate, AffiliateUpdate, AffiliateOut,
+    AffiliateLinkCreate, AffiliateLinkUpdate, AffiliateLinkOut,
+    AffiliateClickOut, ConversionTrack
+)
+
+router = APIRouter(prefix="/affiliates", tags=["Affiliates"])
+
+# ---------- Affiliate CRUD ----------
+@router.post("/", response_model=AffiliateOut, status_code=201)
+def create_affiliate(
+    data: AffiliateCreate,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    try:
+        affiliate = service.create_affiliate(data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return affiliate
+
+@router.get("/", response_model=List[AffiliateOut])
+def list_affiliates(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    active_only: bool = Query(False),
+    network: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    affiliates, total = service.get_affiliates(skip, limit, active_only, network)
+    # For each affiliate, add counts (optional, could be computed in DB)
+    # Here we just return the base affiliates; counts can be fetched separately.
+    return affiliates
+
+@router.get("/{affiliate_id}", response_model=AffiliateOut)
+def get_affiliate(
+    affiliate_id: UUID,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    affiliate = service.get_affiliate(affiliate_id)
+    if not affiliate:
+        raise HTTPException(status_code=404, detail="Affiliate not found")
+    return affiliate
+
+@router.patch("/{affiliate_id}", response_model=AffiliateOut)
+def update_affiliate(
+    affiliate_id: UUID,
+    data: AffiliateUpdate,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    affiliate = service.update_affiliate(affiliate_id, data)
+    if not affiliate:
+        raise HTTPException(status_code=404, detail="Affiliate not found")
+    return affiliate
+
+@router.delete("/{affiliate_id}", status_code=204)
+def delete_affiliate(
+    affiliate_id: UUID,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    deleted = service.delete_affiliate(affiliate_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Affiliate not found")
+    return None
+
+# ---------- Affiliate Links ----------
+@router.post("/links", response_model=AffiliateLinkOut, status_code=201)
+def create_link(
+    data: AffiliateLinkCreate,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    try:
+        link = service.create_link(data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return link
+
+@router.get("/links", response_model=List[AffiliateLinkOut])
+def list_links(
+    affiliate_id: Optional[UUID] = Query(None),
+    category: Optional[str] = Query(None),
+    active_only: bool = Query(False),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    links, total = service.get_links(affiliate_id, category, active_only, skip, limit)
+    return links
+
+@router.get("/links/{link_id}", response_model=AffiliateLinkOut)
+def get_link(
+    link_id: UUID,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    link = service.get_link(link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    return link
+
+@router.patch("/links/{link_id}", response_model=AffiliateLinkOut)
+def update_link(
+    link_id: UUID,
+    data: AffiliateLinkUpdate,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    link = service.update_link(link_id, data)
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    return link
+
+@router.delete("/links/{link_id}", status_code=204)
+def delete_link(
+    link_id: UUID,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    deleted = service.delete_link(link_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Link not found")
+    return None
+
+# ---------- Click Tracking ----------
+@router.get("/click/{link_id}", name="track_affiliate_click")
+def track_click(
+    link_id: UUID,
+    request: Request,
+    session_id: Optional[str] = Query(None),
+    user_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Endpoint to be called when a user clicks an affiliate link.
+    Records the click and redirects to the final destination.
+    """
+    service = AffiliateService(db)
+    result = service.track_click(
+        link_id=link_id,
+        user_id=user_id,
+        session_id=session_id or request.cookies.get("session_id"),
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        referer=request.headers.get("referer"),
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Link not available")
+    # You may want to set a cookie for session tracking
+    response = RedirectResponse(url=result["destination_url"])
+    return response
+
+@router.post("/conversion", status_code=200)
+def record_conversion(
+    data: ConversionTrack,
+    db: Session = Depends(get_db)
+):
+    """
+    Called by affiliate network (or post-purchase) to record a sale.
+    """
+    service = AffiliateService(db)
+    success = service.record_conversion(data)
+    if not success:
+        raise HTTPException(status_code=404, detail="Click not found")
+    return {"status": "conversion recorded"}
+
+# ---------- Stats ----------
+@router.get("/{affiliate_id}/stats")
+def affiliate_stats(
+    affiliate_id: UUID,
+    db: Session = Depends(get_db)
+):
+    service = AffiliateService(db)
+    stats = service.get_affiliate_stats(affiliate_id)
+    if not stats:
+        raise HTTPException(status_code=404, detail="Affiliate not found")
+    return stats
+"""create affiliate tables
+
+Revision ID: 20250301
+Revises: (previous migration, if any)
+Create Date: 2025-03-01 10:00:00.000000
+
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
+
+# revision identifiers, used by Alembic.
+revision = '20250301'
+down_revision = None  # set to previous migration if exists
+branch_labels = None
+depends_on = None
+
+def upgrade():
+    # Create affiliates table
+    op.create_table(
+        'affiliates',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
+        sa.Column('name', sa.String(255), nullable=False),
+        sa.Column('network', sa.String(100), nullable=True),
+        sa.Column('network_id', sa.String(255), nullable=True),
+        sa.Column('commission_rate', sa.Numeric(5, 2), nullable=True),
+        sa.Column('cookie_days', sa.Integer, nullable=False, server_default='30'),
+        sa.Column('base_url', sa.Text, nullable=True),
+        sa.Column('active', sa.Boolean, nullable=False, server_default='true'),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()')),
+        sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.text('now()')),
+    )
+    op.create_index('ix_affiliates_network', 'affiliates', ['network'])
+    op.create_index('ix_affiliates_active', 'affiliates', ['active'])
+
+    # Create affiliate_links table
+    op.create_table(
+        'affiliate_links',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
+        sa.Column('affiliate_id', UUID(as_uuid=True), sa.ForeignKey('affiliates.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('category', sa.String(100), nullable=True),
+        sa.Column('product_name', sa.String(255), nullable=False),
+        sa.Column('description', sa.Text, nullable=True),
+        sa.Column('destination_url', sa.Text, nullable=False),
+        sa.Column('tracking_param', sa.String(255), nullable=True),
+        sa.Column('click_count', sa.BigInteger, nullable=False, server_default='0'),
+        sa.Column('conversion_count', sa.BigInteger, nullable=False, server_default='0'),
+        sa.Column('revenue_generated', sa.Numeric(10, 2), nullable=False, server_default='0.0'),
+        sa.Column('active', sa.Boolean, nullable=False, server_default='true'),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()')),
+        sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.text('now()')),
+    )
+    op.create_index('ix_affiliate_links_affiliate_id', 'affiliate_links', ['affiliate_id'])
+    op.create_index('ix_affiliate_links_category', 'affiliate_links', ['category'])
+    op.create_index('ix_affiliate_links_active', 'affiliate_links', ['active'])
+
+    # Create affiliate_clicks table
+    op.create_table(
+        'affiliate_clicks',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
+        sa.Column('link_id', UUID(as_uuid=True), sa.ForeignKey('affiliate_links.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('affiliate_id', UUID(as_uuid=True), sa.ForeignKey('affiliates.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('user_id', UUID(as_uuid=True), nullable=True),
+        sa.Column('session_id', sa.String(255), nullable=True),
+        sa.Column('ip_address', INET, nullable=True),
+        sa.Column('user_agent', sa.Text, nullable=True),
+        sa.Column('referer', sa.Text, nullable=True),
+        sa.Column('conversion_value', sa.Numeric(10, 2), nullable=True),
+        sa.Column('converted_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()')),
+    )
+    op.create_index('ix_affiliate_clicks_link_id', 'affiliate_clicks', ['link_id'])
+    op.create_index('ix_affiliate_clicks_affiliate_id', 'affiliate_clicks', ['affiliate_id'])
+    op.create_index('ix_affiliate_clicks_created_at', 'affiliate_clicks', ['created_at'])
+    op.create_index('ix_affiliate_clicks_session_id', 'affiliate_clicks', ['session_id'])
+
+def downgrade():
+    op.drop_table('affiliate_clicks')
+    op.drop_table('affiliate_links')
+    op.drop_table('affiliates')
+# tests/conftest.py
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from app.core.database import Base
+from app.models.affiliate import Affiliate, AffiliateLink
+from uuid import uuid4
+
+@pytest.fixture(scope="session")
+def engine():
+    return create_engine("sqlite:///:memory:", echo=False)
+
+@pytest.fixture(scope="session")
+def tables(engine):
+    Base.metadata.create_all(engine)
+    yield
+    Base.metadata.drop_all(engine)
+
+@pytest.fixture
+def db_session(engine, tables):
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = sessionmaker(bind=connection)()
+    yield session
+    session.close()
+    transaction.rollback()
+    connection.close()
+
+@pytest.fixture
+def sample_affiliate(db_session):
+    aff = Affiliate(
+        id=uuid4(),
+        name="Test Affiliate",
+        network="awin",
+        network_id="12345",
+        commission_rate=5.0,
+        cookie_days=30,
+        base_url="https://www.awin.com",
+        active=True
+    )
+    db_session.add(aff)
+    db_session.commit()
+    return aff
+
+@pytest.fixture
+def sample_link(db_session, sample_affiliate):
+    link = AffiliateLink(
+        id=uuid4(),
+        affiliate_id=sample_affiliate.id,
+        category="banking",
+        product_name="Student Bank Account",
+        description="Open an account and get £50",
+        destination_url="https://partner.com/bank",
+        tracking_param="?ref=ediguide",
+        active=True
+    )
+    db_session.add(link)
+    db_session.commit()
+    return link
+# tests/test_affiliate_models.py
+from app.models.affiliate import Affiliate, AffiliateLink, AffiliateClick
+from uuid import uuid4
+from decimal import Decimal
+
+def test_create_affiliate(db_session):
+    aff = Affiliate(
+        id=uuid4(),
+        name="Test",
+        network="direct",
+        active=True
+    )
+    db_session.add(aff)
+    db_session.commit()
+    assert aff.id is not None
+    assert aff.created_at is not None
+
+def test_affiliate_link_relationship(sample_affiliate, sample_link):
+    assert sample_link.affiliate_id == sample_affiliate.id
+    assert sample_link.affiliate.name == "Test Affiliate"
+    assert sample_link in sample_affiliate.links
+
+def test_affiliate_click_creation(db_session, sample_link):
+    click = AffiliateClick(
+        id=uuid4(),
+        link_id=sample_link.id,
+        affiliate_id=sample_link.affiliate_id,
+        session_id="sess123",
+        ip_address="192.168.1.1"
+    )
+    db_session.add(click)
+    db_session.commit()
+    assert click.id is not None
+    assert click.link.product_name == "Student Bank Account"
+
+def test_cascade_delete_affiliate(db_session, sample_affiliate, sample_link):
+    affiliate_id = sample_affiliate.id
+    link_id = sample_link.id
+    db_session.delete(sample_affiliate)
+    db_session.commit()
+    assert db_session.get(Affiliate, affiliate_id) is None
+    assert db_session.get(AffiliateLink, link_id) is None
+# tests/test_affiliate_repository.py
+from app.repositories.affiliate import AffiliateRepository
+from app.schemas.affiliate import AffiliateCreate, AffiliateLinkCreate, AffiliateClickCreate
+from uuid import uuid4
+from decimal import Decimal
+
+def test_create_affiliate(db_session):
+    repo = AffiliateRepository(db_session)
+    data = AffiliateCreate(
+        name="New Affiliate",
+        network="impact",
+        commission_rate=7.5,
+        cookie_days=45,
+        base_url="https://impact.com",
+        active=True
+    )
+    aff = repo.create_affiliate(data)
+    assert aff.name == "New Affiliate"
+    assert aff.network == "impact"
+
+def test_get_affiliate_by_name(db_session, sample_affiliate):
+    repo = AffiliateRepository(db_session)
+    aff = repo.get_affiliate_by_name("Test Affiliate")
+    assert aff is not None
+    assert aff.id == sample_affiliate.id
+
+def test_create_link(db_session, sample_affiliate):
+    repo = AffiliateRepository(db_session)
+    data = AffiliateLinkCreate(
+        affiliate_id=sample_affiliate.id,
+        category="textbooks",
+        product_name="Python Programming",
+        destination_url="https://example.com/book",
+        active=True
+    )
+    link = repo.create_link(data)
+    assert link.product_name == "Python Programming"
+    assert link.affiliate_id == sample_affiliate.id
+
+def test_increment_link_click(db_session, sample_link):
+    repo = AffiliateRepository(db_session)
+    initial = sample_link.click_count
+    repo.increment_link_click(sample_link.id)
+    db_session.refresh(sample_link)
+    assert sample_link.click_count == initial + 1
+
+def test_mark_conversion(db_session, sample_link):
+    repo = AffiliateRepository(db_session)
+    click_data = AffiliateClickCreate(
+        link_id=sample_link.id,
+        affiliate_id=sample_link.affiliate_id,
+        session_id="test"
+    )
+    click = repo.create_click(click_data)
+    assert click.conversion_value is None
+
+    updated = repo.mark_conversion(click.id, Decimal("50.00"))
+    assert updated.conversion_value == Decimal("50.00")
+    assert updated.converted_at is not None
+    db_session.refresh(sample_link)
+    assert sample_link.conversion_count == 1
+    assert sample_link.revenue_generated == Decimal("50.00")
+# tests/test_affiliate_service.py
+from app.services.affiliate import AffiliateService
+from app.schemas.affiliate import AffiliateCreate, AffiliateLinkCreate, ConversionTrack
+from uuid import uuid4
+import pytest
+
+def test_create_affiliate_duplicate_name(db_session, sample_affiliate):
+    service = AffiliateService(db_session)
+    data = AffiliateCreate(
+        name="Test Affiliate",  # same as sample
+        network="awin"
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        service.create_affiliate(data)
+
+def test_track_click_valid(db_session, sample_link):
+    service = AffiliateService(db_session)
+    result = service.track_click(
+        link_id=sample_link.id,
+        session_id="abc123",
+        ip_address="1.2.3.4"
+    )
+    assert result is not None
+    assert result["click_id"] is not None
+    assert sample_link.destination_url in result["destination_url"]
+
+def test_track_click_invalid_link(db_session):
+    service = AffiliateService(db_session)
+    result = service.track_click(link_id=uuid4())
+    assert result is None
+
+def test_record_conversion(db_session, sample_link):
+    service = AffiliateService(db_session)
+    # first create a click
+    click_result = service.track_click(sample_link.id, session_id="conv_test")
+    click_id = click_result["click_id"]
+
+    track = ConversionTrack(click_id=click_id, order_value=Decimal("99.99"))
+    success = service.record_conversion(track)
+    assert success is True
+
+    # verify link stats
+    link = service.get_link(sample_link.id)
+    assert link.conversion_count == 1
+    assert link.revenue_generated == Decimal("99.99")
+# tests/test_affiliate_api.py
+from fastapi.testclient import TestClient
+from app.main import app
+from app.core.database import get_db
+from tests.conftest import db_session  # use fixture
+import pytest
+
+client = TestClient(app)
+
+# Override dependency
+def override_get_db():
+    try:
+        db = db_session()
+        yield db
+    finally:
+        db.close()
+
+app.dependency_overrides[get_db] = override_get_db
+
+def test_create_affiliate():
+    response = client.post("/affiliates/", json={
+        "name": "API Test Affiliate",
+        "network": "awin",
+        "commission_rate": 6.0,
+        "cookie_days": 30,
+        "active": True
+    })
+    assert response.status_code == 201
+    data = response.json()
+    assert data["name"] == "API Test Affiliate"
+    assert "id" in data
+
+def test_get_affiliates():
+    response = client.get("/affiliates/")
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+
+def test_create_link(sample_affiliate):
+    response = client.post("/affiliates/links", json={
+        "affiliate_id": str(sample_affiliate.id),
+        "category": "banking",
+        "product_name": "Best Student Account",
+        "destination_url": "https://bank.com/student",
+        "active": True
+    })
+    assert response.status_code == 201
+    data = response.json()
+    assert data["product_name"] == "Best Student Account"
+
+def test_track_click_redirect(sample_link):
+    response = client.get(f"/affiliates/click/{sample_link.id}", follow_redirects=False)
+    assert response.status_code == 307  # redirect
+    assert sample_link.destination_url in response.headers["location"]
+# Affiliate Partnerships Module (Module 27)
+
+This module implements the database schema, models, and backend logic for managing affiliate partnerships.
+
+## Features
+
+- **Affiliates**: Manage partner networks (Awin, Impact, direct).
+- **Affiliate Links**: Create and track product links per affiliate.
+- **Click Tracking**: Record every click with IP, user agent, session.
+- **Conversion Tracking**: Mark clicks as converted and update revenue.
+- **RESTful API**: Full CRUD for affiliates and links, plus tracking endpoints.
+- **Service Layer**: Business logic for tracking and reporting.
+- **Tests**: Comprehensive unit and integration tests.
+
+## Database Schema
+
+- `affiliates`: Partner information.
+- `affiliate_links`: Specific product links.
+- `affiliate_clicks`: Individual click records.
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST   | `/affiliates/` | Create affiliate |
+| GET    | `/affiliates/` | List affiliates |
+| GET    | `/affiliates/{id}` | Get affiliate |
+| PATCH  | `/affiliates/{id}` | Update affiliate |
+| DELETE | `/affiliates/{id}` | Delete affiliate |
+| POST   | `/affiliates/links` | Create link |
+| GET    | `/affiliates/links` | List links |
+| GET    | `/affiliates/links/{id}` | Get link |
+| PATCH  | `/affiliates/links/{id}` | Update link |
+| DELETE | `/affiliates/links/{id}` | Delete link |
+| GET    | `/affiliates/click/{link_id}` | Track click (redirect) |
+| POST   | `/affiliates/conversion` | Record conversion |
+
+## Usage Example
+
+```python
+from app.services.affiliate import AffiliateService
+from app.schemas.affiliate import AffiliateCreate
+
+service = AffiliateService(db)
+affiliate = service.create_affiliate(AffiliateCreate(name="Example", network="direct"))
+pytest tests/test_affiliate_*.py -v
+
+---
+
+-- ============================
+-- MODULE 28: AFFILIATE SYSTEM
+-- ============================
+
+CREATE TABLE affiliates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    network VARCHAR(100) NOT NULL, -- awin, impact, cj, custom
+    base_url TEXT NOT NULL,
+    api_key TEXT,
+    status BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE affiliate_links (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    affiliate_id UUID REFERENCES affiliates(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    category VARCHAR(100), -- banking, accommodation, textbooks, insurance
+    target_url TEXT NOT NULL,
+    affiliate_url TEXT NOT NULL,
+    commission_rate DECIMAL(5,2),
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE affiliate_clicks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    affiliate_link_id UUID REFERENCES affiliate_links(id),
+    user_id UUID,
+    ip_address VARCHAR(50),
+    user_agent TEXT,
+    referrer TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_affiliate_links_active ON affiliate_links(active);
+CREATE INDEX idx_affiliate_clicks_link ON affiliate_clicks(affiliate_link_id);
+CREATE INDEX idx_affiliate_clicks_time ON affiliate_clicks(created_at);
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from app.core.config import settings
+
+engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+from sqlalchemy import Column, String, Boolean, ForeignKey, Text, DECIMAL, TIMESTAMP
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.sql import func
+from app.core.database import Base
+import uuid
+
+class Affiliate(Base):
+    __tablename__ = "affiliates"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    network = Column(String(100), nullable=False)
+    base_url = Column(Text, nullable=False)
+    api_key = Column(Text)
+    status = Column(Boolean, default=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
+class AffiliateLink(Base):
+    __tablename__ = "affiliate_links"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    affiliate_id = Column(UUID(as_uuid=True), ForeignKey("affiliates.id"))
+    name = Column(String(255), nullable=False)
+    category = Column(String(100))
+    target_url = Column(Text, nullable=False)
+    affiliate_url = Column(Text, nullable=False)
+    commission_rate = Column(DECIMAL(5,2))
+    active = Column(Boolean, default=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
+class AffiliateClick(Base):
+    __tablename__ = "affiliate_clicks"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    affiliate_link_id = Column(UUID(as_uuid=True))
+    user_id = Column(UUID(as_uuid=True))
+    ip_address = Column(String(50))
+    user_agent = Column(Text)
+    referrer = Column(Text)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+from pydantic import BaseModel
+from typing import Optional
+from uuid import UUID
+
+class AffiliateCreate(BaseModel):
+    name: str
+    network: str
+    base_url: str
+    api_key: Optional[str]
+
+class AffiliateLinkCreate(BaseModel):
+    affiliate_id: UUID
+    name: str
+    category: str
+    target_url: str
+    affiliate_url: str
+    commission_rate: float
+
+class AffiliateOut(BaseModel):
+    id: UUID
+    name: str
+    network: str
+    base_url: str
+    status: bool
+
+    class Config:
+        orm_mode = True
+class BaseNetworkAdapter:
+    def generate_link(self, base_url: str, target_url: str, tracking_id: str):
+        raise NotImplementedError
+
+class AwinAdapter(BaseNetworkAdapter):
+    def generate_link(self, base_url, target_url, tracking_id):
+        return f"{base_url}?awinmid={tracking_id}&url={target_url}"
+
+class ImpactAdapter(BaseNetworkAdapter):
+    def generate_link(self, base_url, target_url, tracking_id):
+        return f"{base_url}?clickid={tracking_id}&redirect={target_url}"
+
+class CustomAdapter(BaseNetworkAdapter):
+    def generate_link(self, base_url, target_url, tracking_id):
+        return f"{base_url}?ref={tracking_id}&dest={target_url}"
+
+NETWORK_ADAPTERS = {
+    "awin": AwinAdapter(),
+    "impact": ImpactAdapter(),
+    "custom": CustomAdapter(),
+}
+from sqlalchemy.orm import Session
+from app.models.affiliate import Affiliate, AffiliateLink
+from app.services.network_adapters import NETWORK_ADAPTERS
+import uuid
+
+def create_affiliate(db: Session, data):
+    affiliate = Affiliate(**data.dict())
+    db.add(affiliate)
+    db.commit()
+    db.refresh(affiliate)
+    return affiliate
+
+def create_affiliate_link(db: Session, data, network):
+    adapter = NETWORK_ADAPTERS.get(network)
+    tracking_id = str(uuid.uuid4())
+    generated_url = adapter.generate_link(
+        base_url=data.affiliate_url,
+        target_url=data.target_url,
+        tracking_id=tracking_id
+    )
+
+    link = AffiliateLink(
+        affiliate_id=data.affiliate_id,
+        name=data.name,
+        category=data.category,
+        target_url=data.target_url,
+        affiliate_url=generated_url,
+        commission_rate=data.commission_rate
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy.orm import Session
+from app.core.database import SessionLocal
+from app.schemas.affiliate import AffiliateCreate, AffiliateLinkCreate
+from app.services.affiliate_service import create_affiliate, create_affiliate_link
+from app.models.affiliate import AffiliateLink, AffiliateClick
+
+router = APIRouter(prefix="/api/admin/affiliates", tags=["Affiliates"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/")
+def create_affiliate_api(data: AffiliateCreate, db: Session = Depends(get_db)):
+    return create_affiliate(db, data)
+
+@router.post("/link")
+def create_link_api(data: AffiliateLinkCreate, db: Session = Depends(get_db)):
+    affiliate = db.query(Affiliate).filter(Affiliate.id == data.affiliate_id).first()
+    return create_affiliate_link(db, data, affiliate.network)
+
+@router.get("/links")
+def list_links(db: Session = Depends(get_db)):
+    return db.query(AffiliateLink).all()
+
+@router.get("/click/{link_id}")
+def track_click(link_id: str, request: Request, db: Session = Depends(get_db)):
+    click = AffiliateClick(
+        affiliate_link_id=link_id,
+        ip_address=request.client.host,
+        user_agent=request.headers.get("user-agent"),
+        referrer=request.headers.get("referer")
+    )
+    db.add(click)
+    db.commit()
+
+    link = db.query(AffiliateLink).filter(AffiliateLink.id == link_id).first()
+    return {"redirect": link.affiliate_url}
+export interface Affiliate {
+  id: string
+  name: string
+  network: string
+  base_url: string
+  status: boolean
+}
+
+export interface AffiliateLink {
+  id: string
+  name: string
+  category: string
+  affiliate_url: string
+  commission_rate: number
+  active: boolean
+}
+import axios from "axios"
+
+export const affiliateApi = {
+  createAffiliate: (data:any) => axios.post("/api/admin/affiliates", data),
+  createLink: (data:any) => axios.post("/api/admin/affiliates/link", data),
+  getLinks: () => axios.get("/api/admin/affiliates/links")
+}
+import { create } from "zustand"
+import { AffiliateLink } from "@/types/affiliate"
+import { affiliateApi } from "@/services/affiliateApi"
+
+interface State {
+  links: AffiliateLink[]
+  load: () => Promise<void>
+}
+
+export const useAffiliateStore = create<State>((set) => ({
+  links: [],
+  load: async () => {
+    const res = await affiliateApi.getLinks()
+    set({ links: res.data })
+  }
+}))
+"use client"
+import { useEffect } from "react"
+import { useAffiliateStore } from "@/store/affiliateStore"
+
+export default function AffiliateTable() {
+  const { links, load } = useAffiliateStore()
+
+  useEffect(() => { load() }, [])
+
+  return (
+    <div className="bg-white rounded-2xl shadow-lg p-6">
+      <h2 className="text-xl font-semibold mb-4">Affiliate Links</h2>
+      <table className="w-full">
+        <thead>
+          <tr className="text-left text-gray-500">
+            <th>Name</th>
+            <th>Category</th>
+            <th>Commission</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {links.map(l => (
+            <tr key={l.id} className="border-t">
+              <td className="py-3">{l.name}</td>
+              <td>{l.category}</td>
+              <td>{l.commission_rate}%</td>
+              <td>
+                <span className={`px-3 py-1 rounded-full text-sm ${l.active ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                  {l.active ? "Active" : "Disabled"}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+import AffiliateTable from "@/components/AffiliateTable"
+
+export default function AffiliateAdminPage() {
+  return (
+    <div className="p-8 space-y-6">
+      <h1 className="text-3xl font-bold">Affiliate Management</h1>
+      <AffiliateTable />
+    </div>
+  )
+}
+
+

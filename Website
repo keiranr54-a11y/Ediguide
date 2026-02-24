@@ -15933,3 +15933,627 @@ describe('UniversityGallery', () => {
     expect(screen.getByRole('heading')).toBeInTheDocument();
   });
 });
+module-16-pinterest-integration/
+├── README.md
+├── src/
+│   ├── components/
+│   │   ├── PinterestButton.tsx
+│   │   ├── PinterestButton.stories.tsx
+│   │   ├── PinterestButton.test.tsx
+│   │   ├── PinterestPill.tsx
+│   │   ├── PinterestPill.test.tsx
+│   │   ├── PinterestGalleryButton.tsx
+│   │   └── index.ts
+│   ├── hooks/
+│   │   ├── usePinterestUrl.ts
+│   │   ├── usePinterestTracking.ts
+│   │   └── index.ts
+│   ├── utils/
+│   │   ├── pinterestUrlGenerator.ts
+│   │   └── pinterestUrlGenerator.test.ts
+│   ├── types/
+│   │   └── pinterest.types.ts
+│   ├── constants/
+│   │   └── pinterest.constants.ts
+│   └── styles/
+│       └── pinterest-buttons.css   (optional – we use Tailwind)
+├── pages/
+│   └── demo/
+│       └── pinterest.tsx           (demo page inside Next.js app)
+├── .eslintrc.js
+├── jest.config.js
+├── tsconfig.json
+└── package.json
+/**
+ * Core types for Pinterest integration.
+ */
+
+export type University = {
+  /** Display name (e.g. "St Andrews") */
+  name: string;
+  /** URL‑safe slug (e.g. "st-andrews") */
+  slug: string;
+  /** Region for better search hints (e.g. "scotland", "wales") */
+  region?: string;
+};
+
+export type PinterestButtonVariant = 'primary' | 'secondary' | 'gallery';
+
+export type PinterestButtonProps = {
+  /** University data */
+  university: University;
+  /** Optional additional search terms (e.g. "library", "campus") */
+  searchTerms?: string[];
+  /** Button variant */
+  variant?: PinterestButtonVariant;
+  /** Optional click handler override */
+  onClick?: (url: string) => void;
+  /** Additional CSS classes */
+  className?: string;
+  /** Whether to track the click automatically (default: true) */
+  trackClick?: boolean;
+};
+module-16-pinterest-integration/
+├── README.md
+├── src/
+│   ├── components/
+│   │   ├── PinterestButton.tsx
+│   │   ├── PinterestButton.stories.tsx
+│   │   ├── PinterestButton.test.tsx
+│   │   ├── PinterestPill.tsx
+│   │   ├── PinterestPill.test.tsx
+│   │   ├── PinterestGalleryButton.tsx
+│   │   └── index.ts
+│   ├── hooks/
+│   │   ├── usePinterestUrl.ts
+│   │   ├── usePinterestTracking.ts
+│   │   └── index.ts
+│   ├── utils/
+│   │   ├── pinterestUrlGenerator.ts
+│   │   └── pinterestUrlGenerator.test.ts
+│   ├── types/
+│   │   └── pinterest.types.ts
+│   ├── constants/
+│   │   └── pinterest.constants.ts
+│   └── styles/
+│       └── pinterest-buttons.css   (optional – we use Tailwind)
+├── pages/
+│   └── demo/
+│       └── pinterest.tsx           (demo page inside Next.js app)
+├── .eslintrc.js
+├── jest.config.js
+├── tsconfig.json
+└── package.json
+/**
+ * Core types for Pinterest integration.
+ */
+
+export type University = {
+  /** Display name (e.g. "St Andrews") */
+  name: string;
+  /** URL‑safe slug (e.g. "st-andrews") */
+  slug: string;
+  /** Region for better search hints (e.g. "scotland", "wales") */
+  region?: string;
+};
+
+export type PinterestButtonVariant = 'primary' | 'secondary' | 'gallery';
+
+export type PinterestButtonProps = {
+  /** University data */
+  university: University;
+  /** Optional additional search terms (e.g. "library", "campus") */
+  searchTerms?: string[];
+  /** Button variant */
+  variant?: PinterestButtonVariant;
+  /** Optional click handler override */
+  onClick?: (url: string) => void;
+  /** Additional CSS classes */
+  className?: string;
+  /** Whether to track the click automatically (default: true) */
+  trackClick?: boolean;
+};
+/**
+ * Constants for Pinterest integration.
+ */
+
+export const PINTEREST_BASE_URL = 'https://www.pinterest.com/search/pins/';
+
+/** Default search terms appended to every query */
+export const DEFAULT_SEARCH_TERMS = ['university', 'aesthetic'];
+
+/** Region modifiers for more relevant results */
+export const REGION_MODIFIERS: Record<string, string> = {
+  scotland: 'scotland',
+  wales: 'wales',
+  'northern ireland': 'northern ireland',
+  england: 'england',
+};
+
+/** Analytics event names */
+export const PINTEREST_EVENTS = {
+  CLICK: 'pinterest_button_click',
+  VIEW: 'pinterest_button_view',
+} as const;
+import { PINTEREST_BASE_URL, DEFAULT_SEARCH_TERMS, REGION_MODIFIERS } from '../constants/pinterest.constants';
+import { University } from '../types/pinterest.types';
+
+/**
+ * Generates a Pinterest search URL for a given university.
+ *
+ * @param university - The university object.
+ * @param additionalTerms - Optional extra search terms (e.g. "library").
+ * @returns Fully encoded Pinterest search URL.
+ *
+ * @example
+ * const url = generatePinterestUrl({ name: "St Andrews", slug: "st-andrews", region: "scotland" });
+ * // https://www.pinterest.com/search/pins/?q=st%20andrews%20university%20aesthetic%20scotland
+ */
+export function generatePinterestUrl(
+  university: University,
+  additionalTerms: string[] = []
+): string {
+  // Start with the university name (use slug to ensure URL‑safe, but spaces are encoded later)
+  const nameParts = university.slug.split('-');
+  const queryTerms = [...nameParts, ...DEFAULT_SEARCH_TERMS];
+
+  // Add region modifier if available
+  if (university.region && REGION_MODIFIERS[university.region]) {
+    queryTerms.push(REGION_MODIFIERS[university.region]);
+  }
+
+  // Add any extra terms
+  queryTerms.push(...additionalTerms);
+
+  // Encode and build the URL
+  const queryString = queryTerms.join(' ');
+  const encodedQuery = encodeURIComponent(queryString);
+  return `${PINTEREST_BASE_URL}?q=${encodedQuery}`;
+}
+import { generatePinterestUrl } from './pinterestUrlGenerator';
+
+describe('generatePinterestUrl', () => {
+  it('should generate a basic URL with university name', () => {
+    const uni = { name: 'Oxford', slug: 'oxford' };
+    const url = generatePinterestUrl(uni);
+    expect(url).toBe('https://www.pinterest.com/search/pins/?q=oxford%20university%20aesthetic');
+  });
+
+  it('should include region modifier', () => {
+    const uni = { name: 'St Andrews', slug: 'st-andrews', region: 'scotland' };
+    const url = generatePinterestUrl(uni);
+    expect(url).toBe('https://www.pinterest.com/search/pins/?q=st%20andrews%20university%20aesthetic%20scotland');
+  });
+
+  it('should append additional search terms', () => {
+    const uni = { name: 'Cambridge', slug: 'cambridge' };
+    const url = generatePinterestUrl(uni, ['library', 'old buildings']);
+    expect(url).toBe('https://www.pinterest.com/search/pins/?q=cambridge%20university%20aesthetic%20library%20old%20buildings');
+  });
+
+  it('should handle university names with special characters', () => {
+    const uni = { name: 'Queen’s University Belfast', slug: 'queens-university-belfast' };
+    const url = generatePinterestUrl(uni);
+    expect(url).toBe('https://www.pinterest.com/search/pins/?q=queens%20university%20belfast%20university%20aesthetic');
+  });
+});
+import { useMemo } from 'react';
+import { generatePinterestUrl } from '../utils/pinterestUrlGenerator';
+import { University } from '../types/pinterest.types';
+
+/**
+ * React hook to generate a Pinterest search URL for a university.
+ *
+ * @param university - University data.
+ * @param additionalTerms - Optional extra search terms.
+ * @returns The Pinterest URL.
+ */
+export function usePinterestUrl(
+  university: University,
+  additionalTerms?: string[]
+): string {
+  return useMemo(() => {
+    return generatePinterestUrl(university, additionalTerms);
+  }, [university, additionalTerms]);
+}
+import { useCallback } from 'react';
+import { PINTEREST_EVENTS } from '../constants/pinterest.constants';
+import { University } from '../types/pinterest.types';
+
+// Assume a global analytics module exists (adjust import to your project)
+import { trackEvent } from '../../lib/analytics'; // hypothetical path
+
+type TrackClickOptions = {
+  university: University;
+  buttonVariant: string;
+  url: string;
+};
+
+/**
+ * Hook to provide tracking functions for Pinterest interactions.
+ */
+export function usePinterestTracking() {
+  const trackClick = useCallback(
+    ({ university, buttonVariant, url }: TrackClickOptions) => {
+      trackEvent(PINTEREST_EVENTS.CLICK, {
+        universityName: university.name,
+        universitySlug: university.slug,
+        region: university.region,
+        buttonVariant,
+        url,
+      });
+    },
+    []
+  );
+
+  const trackView = useCallback(
+    (university: University, buttonVariant: string) => {
+      trackEvent(PINTEREST_EVENTS.VIEW, {
+        universityName: university.name,
+        universitySlug: university.slug,
+        region: university.region,
+        buttonVariant,
+      });
+    },
+    []
+  );
+
+  return { trackClick, trackView };
+}
+import React, { useCallback, useEffect } from 'react';
+import { usePinterestUrl } from '../hooks/usePinterestUrl';
+import { usePinterestTracking } from '../hooks/usePinterestTracking';
+import { PinterestButtonProps } from '../types/pinterest.types';
+
+/**
+ * Primary Pinterest button – gradient background with red border.
+ * Opens a Pinterest search for the university's aesthetic photos.
+ */
+export const PinterestButton: React.FC<PinterestButtonProps> = ({
+  university,
+  searchTerms = [],
+  variant = 'primary',
+  onClick,
+  className = '',
+  trackClick = true,
+}) => {
+  const url = usePinterestUrl(university, searchTerms);
+  const { trackClick: track, trackView } = usePinterestTracking();
+
+  // Track view when component mounts (if tracking enabled)
+  useEffect(() => {
+    if (trackClick) {
+      trackView(university, variant);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackClick, university, variant]);
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLAnchorElement>) => {
+      if (trackClick) {
+        track({ university, buttonVariant: variant, url });
+      }
+      if (onClick) {
+        onClick(url);
+      }
+      // The link will open naturally; we don't prevent default.
+    },
+    [trackClick, track, university, variant, url, onClick]
+  );
+
+  // Base classes from the design system + variant overrides
+  const baseClasses = 'inline-flex items-center gap-3 px-5 py-3 rounded-full font-body font-medium transition-all duration-300 ease-out focus:outline-none focus:ring-2 focus:ring-offset-2';
+
+  const variantClasses = {
+    primary:
+      'bg-gradient-to-r from-deep-navy via-midnight-teal to-tropical-turquoise text-white border-2 border-pinterest-red hover:border-pinterest-red-dark hover:shadow-lg hover:-translate-y-1 focus:ring-tropical-turquoise',
+    secondary:
+      'bg-white/95 backdrop-blur-sm border border-soft-grey text-midnight-teal hover:border-pinterest-red hover:text-pinterest-red-dark focus:ring-midnight-teal',
+    gallery:
+      'bg-mint/10 text-deep-navy border border-midnight-teal/30 hover:bg-mint/20 hover:border-midnight-teal focus:ring-midnight-teal',
+  };
+
+  const combinedClasses = `${baseClasses} ${variantClasses[variant]} ${className}`;
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={combinedClasses}
+      onClick={handleClick}
+      aria-label={`Search ${university.name} aesthetic on Pinterest`}
+    >
+      <PinterestIcon className="w-5 h-5" />
+      <span>
+        {variant === 'primary' && `${university.name} aesthetic on Pinterest`}
+        {variant === 'secondary' && 'Mood board'}
+        {variant === 'gallery' && 'Find inspiration'}
+      </span>
+    </a>
+  );
+};
+
+/** Inline Pinterest SVG icon */
+const PinterestIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="10" fill="#E60023" />
+    <path
+      d="M12 5C8.5 5 6 7.5 6 11c0 2.5 1.5 4.5 3.5 5.2 0-0.4 0-0.8 0.1-1.2 0.1-0.4 0.7-2.8 0.7-2.8s-0.2-0.4-0.2-1c0-1 0.6-1.7 1.3-1.7 0.6 0 0.9 0.4 0.9 1 0 0.6-0.4 1.5-0.6 2.3-0.2 0.7 0.3 1.3 1 1.3 1.2 0 2.1-1.3 2.1-3.2 0-1.7-1.2-2.9-3-2.9-2 0-3.2 1.5-3.2 3.1 0 0.6 0.2 1.2 0.6 1.6 0.1 0.1 0.1 0.2 0.1 0.3-0.1 0.3-0.2 0.9-0.2 1-0.1 0.2-0.2 0.3-0.4 0.2-1-0.5-1.6-1.8-1.6-3 0-2.4 1.8-4.7 5.1-4.7 2.7 0 4.8 1.9 4.8 4.5 0 2.7-1.7 4.8-4 4.8-0.8 0-1.5-0.4-1.8-0.9 0 0-0.4 1.6-0.5 2-0.2 0.7-0.6 1.4-1 2 1.1 0.3 2.2 0.5 3.3 0.5 3.5 0 6-2.5 6-6 0-3.5-2.5-6-6-6z"
+      fill="white"
+    />
+  </svg>
+);
+import React from 'react';
+import { PinterestButton } from './PinterestButton';
+import { PinterestButtonProps } from '../types/pinterest.types';
+
+/**
+ * A smaller, pill‑style Pinterest button for inline placement.
+ * Uses the 'secondary' variant of PinterestButton.
+ */
+export const PinterestPill: React.FC<Omit<PinterestButtonProps, 'variant'>> = (props) => {
+  return <PinterestButton {...props} variant="secondary" />;
+};
+import React from 'react';
+import { PinterestButton } from './PinterestButton';
+import { PinterestButtonProps } from '../types/pinterest.types';
+
+/**
+ * Pinterest button styled for the gallery section.
+ */
+export const PinterestGalleryButton: React.FC<Omit<PinterestButtonProps, 'variant'>> = (props) => {
+  return <PinterestButton {...props} variant="gallery" />;
+};
+export { PinterestButton } from './PinterestButton';
+export { PinterestPill } from './PinterestPill';
+export { PinterestGalleryButton } from './PinterestGalleryButton';
+export type { PinterestButtonProps, University, PinterestButtonVariant } from '../types/pinterest.types';
+import type { Meta, StoryObj } from '@storybook/react';
+import { PinterestButton } from './PinterestButton';
+import { PinterestPill } from './PinterestPill';
+import { PinterestGalleryButton } from './PinterestGalleryButton';
+
+const mockUniversity = {
+  name: 'St Andrews',
+  slug: 'st-andrews',
+  region: 'scotland',
+};
+
+const meta: Meta<typeof PinterestButton> = {
+  title: 'Components/PinterestButton',
+  component: PinterestButton,
+  parameters: {
+    layout: 'centered',
+  },
+  tags: ['autodocs'],
+  argTypes: {
+    variant: {
+      control: 'select',
+      options: ['primary', 'secondary', 'gallery'],
+    },
+  },
+};
+
+export default meta;
+type Story = StoryObj<typeof PinterestButton>;
+
+export const Primary: Story = {
+  args: {
+    university: mockUniversity,
+    variant: 'primary',
+  },
+};
+
+export const Secondary: Story = {
+  render: () => <PinterestPill university={mockUniversity} />,
+};
+
+export const Gallery: Story = {
+  render: () => <PinterestGalleryButton university={mockUniversity} />,
+};
+
+export const WithExtraTerms: Story = {
+  args: {
+    university: mockUniversity,
+    searchTerms: ['library', 'cloisters'],
+    variant: 'primary',
+  },
+};
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { PinterestButton } from './PinterestButton';
+import { generatePinterestUrl } from '../utils/pinterestUrlGenerator';
+
+// Mock the analytics module
+jest.mock('../../lib/analytics', () => ({
+  trackEvent: jest.fn(),
+}));
+
+const mockUniversity = {
+  name: 'Oxford',
+  slug: 'oxford',
+  region: 'england',
+};
+
+describe('PinterestButton', () => {
+  it('renders with correct text and link', () => {
+    render(<PinterestButton university={mockUniversity} />);
+    const link = screen.getByRole('link', { name: /Oxford aesthetic on Pinterest/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute(
+      'href',
+      generatePinterestUrl(mockUniversity)
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('calls onClick handler when clicked', () => {
+    const handleClick = jest.fn();
+    render(<PinterestButton university={mockUniversity} onClick={handleClick} />);
+    const link = screen.getByRole('link');
+    fireEvent.click(link);
+    expect(handleClick).toHaveBeenCalledWith(generatePinterestUrl(mockUniversity));
+  });
+
+  it('applies custom className', () => {
+    render(<PinterestButton university={mockUniversity} className="custom-class" />);
+    const link = screen.getByRole('link');
+    expect(link).toHaveClass('custom-class');
+  });
+
+  it('renders secondary variant with correct text', () => {
+    render(<PinterestButton university={mockUniversity} variant="secondary" />);
+    expect(screen.getByText('Mood board')).toBeInTheDocument();
+  });
+
+  it('renders gallery variant with correct text', () => {
+    render(<PinterestButton university={mockUniversity} variant="gallery" />);
+    expect(screen.getByText('Find inspiration')).toBeInTheDocument();
+  });
+});
+import React from 'react';
+import { PinterestButton, PinterestPill, PinterestGalleryButton } from '../../src/components';
+import type { University } from '../../src/types/pinterest.types';
+
+const universities: University[] = [
+  { name: 'Oxford', slug: 'oxford', region: 'england' },
+  { name: 'St Andrews', slug: 'st-andrews', region: 'scotland' },
+  { name: 'Cardiff', slug: 'cardiff', region: 'wales' },
+  { name: 'Queen’s Belfast', slug: 'queens-belfast', region: 'northern ireland' },
+];
+
+export default function PinterestDemoPage() {
+  return (
+    <div className="container mx-auto px-4 py-12">
+      <h1 className="font-heading text-4xl text-deep-navy mb-8">Pinterest Button Demo</h1>
+
+      <section className="mb-12">
+        <h2 className="text-2xl font-heading text-midnight-teal mb-4">Primary Buttons</h2>
+        <div className="flex flex-wrap gap-6">
+          {universities.map((uni) => (
+            <PinterestButton key={uni.slug} university={uni} />
+          ))}
+        </div>
+      </section>
+
+      <section className="mb-12">
+        <h2 className="text-2xl font-heading text-midnight-teal mb-4">Secondary (Pill) Buttons</h2>
+        <div className="flex flex-wrap gap-4">
+          {universities.map((uni) => (
+            <PinterestPill key={uni.slug} university={uni} />
+          ))}
+        </div>
+      </section>
+
+      <section className="mb-12">
+        <h2 className="text-2xl font-heading text-midnight-teal mb-4">Gallery Buttons</h2>
+        <div className="flex flex-wrap gap-4">
+          {universities.map((uni) => (
+            <PinterestGalleryButton key={uni.slug} university={uni} />
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-2xl font-heading text-midnight-teal mb-4">With Additional Search Terms</h2>
+        <div className="flex flex-wrap gap-6">
+          <PinterestButton university={universities[0]} searchTerms={['library', 'sunset']} />
+          <PinterestButton university={universities[1]} searchTerms={['castle', 'coast']} />
+        </div>
+      </section>
+    </div>
+  );
+}
+# Module 16 – Pinterest Integration for University Profiles
+
+This module provides a dynamic Pinterest search button that allows users to discover aesthetic photos of universities directly from ediguide. The button generates a Pinterest search URL based on the university name (plus “university aesthetic”) and optionally a region modifier (e.g., “scotland”) for more relevant results.
+
+## Features
+
+- **Two button variants** – Primary hero button (gradient, red border) and secondary pill button (light, inline).
+- **Gallery variant** – Slightly different styling for the image gallery section.
+- **Click tracking** – Integrated with the central analytics module (trackEvent).
+- **Fully typed** – TypeScript throughout.
+- **Tested** – Unit tests for URL generator and components.
+- **Storybook** – Stories for visual regression and documentation.
+- **Demo page** – Next.js page to preview all buttons.
+
+## Usage
+
+```tsx
+import { PinterestButton, PinterestPill } from '@/components/pinterest';
+
+const university = { name: 'St Andrews', slug: 'st-andrews', region: 'scotland' };
+
+// In your university profile:
+<PinterestButton university={university} />
+
+// In a gallery or inline:
+<PinterestPill university={university} searchTerms={['library']} />
+type University = {
+  name: string;
+  slug: string;
+  region?: 'england' | 'scotland' | 'wales' | 'northern ireland';
+};
+https://www.pinterest.com/search/pins/?q=<slugified name>%20university%20aesthetic[%20region][%20additionalTerms]
+npm test src/module-16
+npm run storybook
+
+---
+
+### Additional configuration files (optional but included for completeness)
+
+**.eslintrc.js** (if not already present)
+
+```javascript
+module.exports = {
+  extends: ['next/core-web-vitals', 'plugin:storybook/recommended'],
+  rules: {
+    // any custom rules
+  },
+};
+const nextJest = require('next/jest');
+
+const createJestConfig = nextJest({ dir: './' });
+
+const customJestConfig = {
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
+  testEnvironment: 'jest-environment-jsdom',
+  moduleNameMapper: {
+    '^@/components/(.*)$': '<rootDir>/src/components/$1',
+    '^@/lib/(.*)$': '<rootDir>/lib/$1',
+  },
+};
+
+module.exports = createJestConfig(customJestConfig);
+{
+  "compilerOptions": {
+    "target": "es5",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}

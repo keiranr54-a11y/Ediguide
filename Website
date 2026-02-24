@@ -17676,3 +17676,783 @@ export const TabsContent: React.FC<React.HTMLAttributes<HTMLDivElement> & { valu
     </div>
   );
 };
+# File: app/compare/models.py
+# Database models for the comparison tool (matches the overall ediguide schema)
+
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, JSON, Numeric
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+
+Base = declarative_base()
+
+class University(Base):
+    __tablename__ = "universities"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, unique=True)
+    slug = Column(String(255), nullable=False, unique=True)
+    region = Column(String(100))
+    rank = Column(Integer)
+    composite_score = Column(Float)          # e.g., 10.48
+    roi_percentage = Column(Float)            # overall ROI %
+    lifetime_gain = Column(Numeric(12,2))     # in GBP (2026 money)
+    investment = Column(Numeric(12,2))        # total cost
+    annual_premium = Column(Numeric(10,2))
+    payback_years = Column(Float)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+class Subject(Base):
+    __tablename__ = "subjects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), nullable=False, unique=True)
+    category = Column(String(100))
+    roi_bachelors = Column(Float)
+    roi_masters = Column(Float)
+    roi_doctorate = Column(Float)
+    lifetime_gain_bachelors = Column(Numeric(12,2))
+    lifetime_gain_masters = Column(Numeric(12,2))
+    lifetime_gain_doctorate = Column(Numeric(12,2))
+
+class RegionalCost(Base):
+    __tablename__ = "regional_costs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    region = Column(String(100), nullable=False, unique=True)
+    living_cost_per_year = Column(Numeric(10,2))
+    opportunity_wage_per_year = Column(Numeric(10,2))
+
+class InflationFactor(Base):
+    __tablename__ = "inflation_factors"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    year = Column(Integer, nullable=False, unique=True)
+    factor = Column(Float)   # multiplier to convert to 2026 GBP
+# File: app/compare/schemas.py
+# Pydantic models for request/response validation
+
+from pydantic import BaseModel, Field, validator
+from typing import List, Optional, Union, Literal
+from uuid import UUID
+from decimal import Decimal
+from datetime import datetime
+
+class ComparisonItemRequest(BaseModel):
+    """Identifies a single item to compare (university or subject)."""
+    type: Literal["university", "subject"]
+    id: UUID
+    # Optional filters for subject (degree level)
+    degree_level: Optional[Literal["bachelors", "masters", "doctorate"]] = "bachelors"
+
+class CompareRequest(BaseModel):
+    """Request body for comparison endpoint."""
+    items: List[ComparisonItemRequest] = Field(..., min_items=2, max_items=6)
+    include_historical: bool = False
+    currency_year: int = 2026
+
+    @validator('items')
+    def ensure_unique_types(cls, v):
+        # Allow duplicates? Probably not, but we won't forbid them; API will handle.
+        return v
+
+class UniversityComparisonData(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    rank: int
+    composite_score: float
+    roi_percentage: float
+    lifetime_gain: Decimal
+    investment: Decimal
+    annual_premium: Decimal
+    payback_years: float
+    region: str
+    # Optional extra stats
+    percentile_rank: Optional[float] = None   # e.g., top 5%
+    vs_national_average: Optional[float] = None  # % difference from median
+
+class SubjectComparisonData(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    category: str
+    roi: float                # depending on degree level
+    lifetime_gain: Decimal
+    degree_level: str
+
+class ComparisonResponse(BaseModel):
+    """Response containing side-by-side comparison data."""
+    universities: List[UniversityComparisonData] = []
+    subjects: List[SubjectComparisonData] = []
+    request_timestamp: datetime
+    cached: bool = False
+
+    class Config:
+        json_encoders = {
+            Decimal: str,   # serialize Decimal as string for precision
+            UUID: str,
+        }
+# File: app/compare/service.py
+# Business logic for fetching and assembling comparison data
+
+import logging
+from typing import List, Dict, Any, Optional
+from uuid import UUID
+from decimal import Decimal
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+
+from . import models, schemas
+from ..core.cache import cache  # Redis client
+from ..core.config import settings
+
+logger = logging.getLogger(__name__)
+
+class CompareService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_university_data(self, uni_id: UUID) -> Optional[models.University]:
+        result = await self.db.execute(
+            select(models.University).where(models.University.id == uni_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_subject_data(self, subj_id: UUID) -> Optional[models.Subject]:
+        result = await self.db.execute(
+            select(models.Subject).where(models.Subject.id == subj_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_national_median_composite(self) -> float:
+        """Fetch median composite score for all universities."""
+        # Cache this value for 1 hour
+        cache_key = "national_median_composite"
+        cached = await cache.get(cache_key)
+        if cached:
+            return float(cached)
+
+        result = await self.db.execute(
+            select(func.percentile_cont(0.5).within_group(models.University.composite_score))
+        )
+        median = result.scalar() or 0.0
+        await cache.setex(cache_key, 3600, str(median))
+        return median
+
+    async def get_university_rank_percentile(self, composite: float) -> float:
+        """Calculate percentile rank of a university based on composite score."""
+        # Count universities with score <= given composite
+        total = await self.db.scalar(select(func.count(models.University.id)))
+        if not total:
+            return 0.0
+        less_or_equal = await self.db.scalar(
+            select(func.count(models.University.id)).where(models.University.composite_score <= composite)
+        )
+        return (less_or_equal / total) * 100
+
+    async def prepare_comparison(self, items: List[schemas.ComparisonItemRequest]) -> schemas.ComparisonResponse:
+        universities_data = []
+        subjects_data = []
+
+        # Get national median for % difference calculation
+        median_composite = await self.get_national_median_composite()
+
+        for item in items:
+            if item.type == "university":
+                uni = await self.get_university_data(item.id)
+                if not uni:
+                    logger.warning(f"University {item.id} not found")
+                    continue
+
+                # Compute extra metrics
+                vs_national = ((uni.composite_score - median_composite) / median_composite) * 100 if median_composite else None
+                percentile = await self.get_university_rank_percentile(uni.composite_score)
+
+                universities_data.append(
+                    schemas.UniversityComparisonData(
+                        id=uni.id,
+                        name=uni.name,
+                        slug=uni.slug,
+                        rank=uni.rank,
+                        composite_score=uni.composite_score,
+                        roi_percentage=uni.roi_percentage,
+                        lifetime_gain=uni.lifetime_gain,
+                        investment=uni.investment,
+                        annual_premium=uni.annual_premium,
+                        payback_years=uni.payback_years,
+                        region=uni.region,
+                        percentile_rank=percentile,
+                        vs_national_average=vs_national,
+                    )
+                )
+
+            else:  # subject
+                subj = await self.get_subject_data(item.id)
+                if not subj:
+                    logger.warning(f"Subject {item.id} not found")
+                    continue
+
+                # Pick ROI and lifetime gain based on degree level
+                degree_level = item.degree_level or "bachelors"
+                if degree_level == "bachelors":
+                    roi = subj.roi_bachelors
+                    gain = subj.lifetime_gain_bachelors
+                elif degree_level == "masters":
+                    roi = subj.roi_masters
+                    gain = subj.lifetime_gain_masters
+                else:  # doctorate
+                    roi = subj.roi_doctorate
+                    gain = subj.lifetime_gain_doctorate
+
+                subjects_data.append(
+                    schemas.SubjectComparisonData(
+                        id=subj.id,
+                        name=subj.name,
+                        slug=subj.slug,
+                        category=subj.category,
+                        roi=roi,
+                        lifetime_gain=gain,
+                        degree_level=degree_level,
+                    )
+                )
+
+        return schemas.ComparisonResponse(
+            universities=universities_data,
+            subjects=subjects_data,
+            request_timestamp=datetime.utcnow(),
+            cached=False,
+        )
+# File: app/compare/api.py
+# FastAPI router for comparison endpoints
+
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List
+import logging
+
+from . import schemas, service
+from ..db.session import get_db
+from ..core.cache import cache
+from ..core.dependencies import get_current_user_optional
+from ..core.logging import log_request
+
+router = APIRouter(prefix="/compare", tags=["Comparison"])
+logger = logging.getLogger(__name__)
+
+@router.post("/", response_model=schemas.ComparisonResponse)
+async def compare_items(
+    request: Request,
+    compare_req: schemas.CompareRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user_optional),
+):
+    """
+    Compare multiple universities and/or subjects side-by-side.
+    Returns ROI metrics, lifetime gains, and additional statistics.
+    Maximum 6 items per request.
+    """
+    # Log request for analytics
+    log_request(request, "compare", items=[str(i.id) for i in compare_req.items])
+
+    # Validate number of items
+    if len(compare_req.items) < 2 or len(compare_req.items) > 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Number of comparison items must be between 2 and 6."
+        )
+
+    # Generate cache key based on items and currency year
+    item_ids = sorted([str(i.id) + i.type + (i.degree_level or "bachelors") for i in compare_req.items])
+    cache_key = f"compare:{'-'.join(item_ids)}:{compare_req.currency_year}"
+    cached_result = await cache.get(cache_key)
+    if cached_result:
+        logger.debug(f"Cache hit for comparison {cache_key}")
+        # In production, you'd deserialize from JSON; here we assume cached as dict
+        return schemas.ComparisonResponse(**cached_result, cached=True)
+
+    # Prepare data using service
+    svc = service.CompareService(db)
+    try:
+        result = await svc.prepare_comparison(compare_req.items)
+    except Exception as e:
+        logger.error(f"Comparison failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during comparison")
+
+    # Cache for 1 hour (adjust as needed)
+    await cache.setex(cache_key, 3600, result.dict())
+
+    return result
+
+@router.get("/universities", response_model=List[schemas.UniversityComparisonData])
+async def list_universities_for_comparison(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Get a list of all universities (simplified) to populate comparison selector.
+    """
+    from .models import University
+    result = await db.execute(
+        select(University).order_by(University.rank).offset(offset).limit(limit)
+    )
+    unis = result.scalars().all()
+    # Convert to the comparison schema (some fields optional)
+    return [
+        schemas.UniversityComparisonData(
+            id=u.id,
+            name=u.name,
+            slug=u.slug,
+            rank=u.rank,
+            composite_score=u.composite_score,
+            roi_percentage=u.roi_percentage,
+            lifetime_gain=u.lifetime_gain,
+            investment=u.investment,
+            annual_premium=u.annual_premium,
+            payback_years=u.payback_years,
+            region=u.region,
+        ) for u in unis
+    ]
+
+@router.get("/subjects", response_model=List[schemas.SubjectComparisonData])
+async def list_subjects_for_comparison(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Get a list of all subjects to populate comparison selector.
+    """
+    from .models import Subject
+    result = await db.execute(
+        select(Subject).order_by(Subject.name).offset(offset).limit(limit)
+    )
+    subs = result.scalars().all()
+    return [
+        schemas.SubjectComparisonData(
+            id=s.id,
+            name=s.name,
+            slug=s.slug,
+            category=s.category,
+            roi=s.roi_bachelors,
+            lifetime_gain=s.lifetime_gain_bachelors,
+            degree_level="bachelors",
+        ) for s in subs
+    ]
+# File: app/compare/dependencies.py
+# Optional dependencies for the compare module
+
+from fastapi import Request, HTTPException
+from typing import Optional
+
+async def validate_compare_request(request: Request):
+    """Validate that the request body is properly formed."""
+    body = await request.json()
+    items = body.get("items", [])
+    if len(items) < 2:
+        raise HTTPException(status_code=400, detail="At least two items required")
+    return body
+# File: app/compare/dependencies.py
+# Optional dependencies for the compare module
+
+from fastapi import Request, HTTPException
+from typing import Optional
+
+async def validate_compare_request(request: Request):
+    """Validate that the request body is properly formed."""
+    body = await request.json()
+    items = body.get("items", [])
+    if len(items) < 2:
+        raise HTTPException(status_code=400, detail="At least two items required")
+    return body
+# File: app/compare/utils.py
+# Helper functions for formatting, inflation, etc.
+
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Union
+
+def format_currency(value: Union[Decimal, float], currency: str = "£") -> str:
+    """Format a number as GBP currency string."""
+    if isinstance(value, float):
+        value = Decimal(str(value))
+    return f"{currency}{value:,.2f}"
+
+def percent_difference(value: float, baseline: float) -> float:
+    """Calculate (value - baseline)/baseline * 100."""
+    if baseline == 0:
+        return 0.0
+    return ((value - baseline) / baseline) * 100
+
+def inflate_to_year(amount: Decimal, from_year: int, to_year: int, factors: dict) -> Decimal:
+    """Apply inflation factors to convert amount to target year."""
+    if from_year == to_year:
+        return amount
+    # factors should be a dict {year: multiplier}
+    multiplier = factors.get(to_year, 1.0) / factors.get(from_year, 1.0)
+    return amount * Decimal(str(multiplier))
+# File: app/compare/tests/test_compare_api.py
+# Integration tests for the comparison API
+
+import pytest
+from httpx import AsyncClient
+from uuid import uuid4
+from app.main import app
+from app.compare.models import University, Subject
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from app.db.session import get_db
+
+# Test database setup
+TEST_DATABASE_URL = "postgresql+asyncpg://user:pass@localhost/test_db"
+engine = create_async_engine(TEST_DATABASE_URL)
+TestingSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+async def override_get_db():
+    async with TestingSessionLocal() as session:
+        yield session
+
+app.dependency_overrides[get_db] = override_get_db
+
+@pytest.fixture
+async def client():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        yield ac
+
+@pytest.fixture
+async def init_test_data():
+    # Insert sample universities and subjects
+    async with TestingSessionLocal() as session:
+        uni1 = University(
+            id=uuid4(),
+            name="Test University A",
+            slug="test-a",
+            region="South East",
+            rank=1,
+            composite_score=10.5,
+            roi_percentage=350.0,
+            lifetime_gain=350000,
+            investment=100000,
+            annual_premium=8750,
+            payback_years=5.2,
+        )
+        uni2 = University(
+            id=uuid4(),
+            name="Test University B",
+            slug="test-b",
+            region="London",
+            rank=2,
+            composite_score=20.3,
+            roi_percentage=280.0,
+            lifetime_gain=280000,
+            investment=95000,
+            annual_premium=7000,
+            payback_years=6.1,
+        )
+        subj1 = Subject(
+            id=uuid4(),
+            name="Computer Science",
+            slug="computer-science",
+            category="STEM",
+            roi_bachelors=250.0,
+            roi_masters=300.0,
+            roi_doctorate=320.0,
+            lifetime_gain_bachelors=200000,
+            lifetime_gain_masters=250000,
+            lifetime_gain_doctorate=270000,
+        )
+        session.add_all([uni1, uni2, subj1])
+        await session.commit()
+        return {"uni1": uni1, "uni2": uni2, "subj1": subj1}
+
+@pytest.mark.asyncio
+async def test_compare_two_universities(client, init_test_data):
+    data = init_test_data
+    payload = {
+        "items": [
+            {"type": "university", "id": str(data["uni1"].id)},
+            {"type": "university", "id": str(data["uni2"].id)},
+        ]
+    }
+    response = await client.post("/compare/", json=payload)
+    assert response.status_code == 200
+    resp = response.json()
+    assert len(resp["universities"]) == 2
+    assert resp["universities"][0]["name"] == "Test University A"
+    assert resp["universities"][1]["name"] == "Test University B"
+    assert "vs_national_average" in resp["universities"][0]
+
+@pytest.mark.asyncio
+async def test_compare_university_and_subject(client, init_test_data):
+    data = init_test_data
+    payload = {
+        "items": [
+            {"type": "university", "id": str(data["uni1"].id)},
+            {"type": "subject", "id": str(data["subj1"].id), "degree_level": "masters"},
+        ]
+    }
+    response = await client.post("/compare/", json=payload)
+    assert response.status_code == 200
+    resp = response.json()
+    assert len(resp["universities"]) == 1
+    assert len(resp["subjects"]) == 1
+    assert resp["subjects"][0]["degree_level"] == "masters"
+    assert resp["subjects"][0]["roi"] == 300.0
+
+@pytest.mark.asyncio
+async def test_too_few_items(client):
+    payload = {"items": [{"type": "university", "id": str(uuid4())}]}
+    response = await client.post("/compare/", json=payload)
+    assert response.status_code == 400
+    assert "between 2 and 6" in response.text
+
+@pytest.mark.asyncio
+async def test_too_many_items(client):
+    items = [{"type": "university", "id": str(uuid4())} for _ in range(7)]
+    payload = {"items": items}
+    response = await client.post("/compare/", json=payload)
+    assert response.status_code == 400
+# File: app/compare/tests/test_service.py
+# Unit tests for CompareService
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.compare import service, models, schemas
+
+@pytest.fixture
+def mock_db():
+    return AsyncMock(spec=AsyncSession)
+
+@pytest.fixture
+def sample_university():
+    uni = models.University(
+        id=uuid4(),
+        name="Test Uni",
+        slug="test-uni",
+        region="North West",
+        rank=10,
+        composite_score=150.0,
+        roi_percentage=200.0,
+        lifetime_gain=200000,
+        investment=80000,
+        annual_premium=5000,
+        payback_years=7.5,
+    )
+    return uni
+
+@pytest.fixture
+def sample_subject():
+    subj = models.Subject(
+        id=uuid4(),
+        name="History",
+        slug="history",
+        category="Humanities",
+        roi_bachelors=120.0,
+        roi_masters=140.0,
+        roi_doctorate=150.0,
+        lifetime_gain_bachelors=100000,
+        lifetime_gain_masters=120000,
+        lifetime_gain_doctorate=130000,
+    )
+    return subj
+
+@pytest.mark.asyncio
+async def test_get_university_data_found(mock_db, sample_university):
+    # Mock the execute and scalar_one_or_none
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = sample_university
+    mock_db.execute.return_value = mock_result
+
+    svc = service.CompareService(mock_db)
+    result = await svc.get_university_data(sample_university.id)
+    assert result == sample_university
+    mock_db.execute.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_get_national_median_composite(mock_db):
+    # Mock percentile result
+    mock_result = MagicMock()
+    mock_result.scalar.return_value = 120.5
+    mock_db.execute.return_value = mock_result
+
+    svc = service.CompareService(mock_db)
+    median = await svc.get_national_median_composite()
+    assert median == 120.5
+
+@pytest.mark.asyncio
+async def test_get_university_rank_percentile(mock_db):
+    # Mock count queries
+    mock_db.scalar.side_effect = [100, 75]  # total, less_or_equal
+    svc = service.CompareService(mock_db)
+    percentile = await svc.get_university_rank_percentile(200.0)
+    assert percentile == 75.0
+
+@pytest.mark.asyncio
+async def test_prepare_comparison_mixed(mock_db, sample_university, sample_subject):
+    # Mock the individual fetches
+    svc = service.CompareService(mock_db)
+    svc.get_university_data = AsyncMock(return_value=sample_university)
+    svc.get_subject_data = AsyncMock(return_value=sample_subject)
+    svc.get_national_median_composite = AsyncMock(return_value=100.0)
+    svc.get_university_rank_percentile = AsyncMock(return_value=90.0)
+
+    items = [
+        schemas.ComparisonItemRequest(type="university", id=sample_university.id),
+        schemas.ComparisonItemRequest(type="subject", id=sample_subject.id, degree_level="doctorate"),
+    ]
+    resp = await svc.prepare_comparison(items)
+    assert len(resp.universities) == 1
+    assert len(resp.subjects) == 1
+    assert resp.universities[0].name == "Test Uni"
+    assert resp.subjects[0].name == "History"
+    assert resp.subjects[0].roi == 150.0
+    assert resp.universities[0].vs_national_average == 50.0  # (150-100)/100*100
+# File: app/core/cache.py
+# Simple Redis cache wrapper (used by compare module)
+
+import redis.asyncio as redis
+from app.core.config import settings
+
+class RedisCache:
+    def __init__(self):
+        self.client = None
+
+    async def init(self):
+        self.client = await redis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    async def get(self, key: str):
+        if not self.client:
+            await self.init()
+        return await self.client.get(key)
+
+    async def setex(self, key: str, seconds: int, value: str):
+        if not self.client:
+            await self.init()
+        await self.client.setex(key, seconds, value)
+
+cache = RedisCache()
+# File: app/core/config.py
+# Pydantic settings (excerpt)
+
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    DATABASE_URL: str = "postgresql+asyncpg://user:pass@localhost/ediguide"
+    REDIS_URL: str = "redis://localhost:6379/0"
+    ENVIRONMENT: str = "development"
+    # ... other settings
+
+settings = Settings()
+# File: app/db/session.py
+# Database session dependency
+
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
+
+engine = create_async_engine(settings.DATABASE_URL, echo=True)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+# File: app/core/logging.py
+# Simple logging utility
+
+import logging
+from fastapi import Request
+
+logger = logging.getLogger(__name__)
+
+def log_request(request: Request, endpoint: str, **extra):
+    """Log request details for analytics."""
+    logger.info(
+        f"Request to {endpoint}",
+        extra={
+            "method": request.method,
+            "url": str(request.url),
+            "client_host": request.client.host,
+            **extra,
+        }
+    )
+# File: app/main.py
+# FastAPI application entry point (excerpt)
+
+from fastapi import FastAPI
+from app.compare import api as compare_api
+from app.core.cache import cache
+
+app = FastAPI(title="ediguide API")
+
+@app.on_event("startup")
+async def startup():
+    await cache.init()
+
+app.include_router(compare_api.router, prefix="/api/v1")
+# File: alembic/versions/xxxx_initial_models.py
+# Migration script for the tables (simplified)
+
+"""initial models
+
+Revision ID: xxxx
+Revises:
+Create Date: 2025-03-20
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID
+
+def upgrade():
+    op.create_table(
+        'universities',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True),
+        sa.Column('name', sa.String(255), nullable=False, unique=True),
+        sa.Column('slug', sa.String(255), nullable=False, unique=True),
+        sa.Column('region', sa.String(100)),
+        sa.Column('rank', sa.Integer),
+        sa.Column('composite_score', sa.Float),
+        sa.Column('roi_percentage', sa.Float),
+        sa.Column('lifetime_gain', sa.Numeric(12,2)),
+        sa.Column('investment', sa.Numeric(12,2)),
+        sa.Column('annual_premium', sa.Numeric(10,2)),
+        sa.Column('payback_years', sa.Float),
+        sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime, onupdate=sa.func.now()),
+    )
+    op.create_table(
+        'subjects',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True),
+        sa.Column('name', sa.String(255), nullable=False),
+        sa.Column('slug', sa.String(255), nullable=False, unique=True),
+        sa.Column('category', sa.String(100)),
+        sa.Column('roi_bachelors', sa.Float),
+        sa.Column('roi_masters', sa.Float),
+        sa.Column('roi_doctorate', sa.Float),
+        sa.Column('lifetime_gain_bachelors', sa.Numeric(12,2)),
+        sa.Column('lifetime_gain_masters', sa.Numeric(12,2)),
+        sa.Column('lifetime_gain_doctorate', sa.Numeric(12,2)),
+    )
+    # ... regional_costs, inflation_factors
+# File: pyproject.toml
+# Project dependencies (relevant excerpts)
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.115.0"
+uvicorn = {extras = ["standard"], version = "^0.34.0"}
+sqlalchemy = {version = "^2.0", extras = ["asyncio"]}
+asyncpg = "^0.30.0"
+redis = {version = "^5.2", extras = ["asyncio"]}
+pydantic = "^2.10"
+pydantic-settings = "^2.7"
+alembic = "^1.15"
+httpx = "^0.28.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-asyncio = "^0.25"
+pytest-cov = "^6.0"

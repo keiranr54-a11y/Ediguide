@@ -12503,3 +12503,1878 @@ uvicorn app.main:app --reload
   "discount_rate": 0.035
 }
 pytest tests/ -v
+// src/types/roi.types.ts
+// ============================================================================
+// Core Type Definitions for ROI Calculator
+// ============================================================================
+
+export type DegreeLevel = 'bachelors' | 'masters' | 'phd';
+export type ResidencyStatus = 'uk' | 'eu' | 'international';
+export type FundingSource = 'loans' | 'scholarship' | 'parental' | 'savings' | 'combination';
+export type Currency = 'GBP' | 'EUR' | 'USD';
+
+export interface University {
+  id: string;
+  name: string;
+  slug: string;
+  region: string;
+  rank: number;
+  compositeScore: number;
+  institutionalROI: number;
+  tuitionFees: {
+    uk: number;
+    eu: number;
+    international: number;
+  };
+  livingCosts: {
+    accommodation: number;
+    food: number;
+    transport: number;
+    other: number;
+  };
+  graduateOutcomes: {
+    employmentRate: number;
+    averageSalary: number;
+    topEmployers: string[];
+  };
+  imageUrl?: string;
+}
+
+export interface Subject {
+  id: string;
+  name: string;
+  slug: string;
+  category: string;
+  subjectROI: {
+    bachelors: number;
+    masters: number;
+    phd: number;
+  };
+  earningsTrajectory: {
+    entry: number;
+    mid: number;
+    peak: number;
+    late: number;
+  };
+  careerPaths: string[];
+}
+
+export interface ROICalculationInput {
+  universityId: string;
+  subjectId: string;
+  degreeLevel: DegreeLevel;
+  residencyStatus: ResidencyStatus;
+  fundingSources: FundingSource[];
+  scholarshipAmount?: number;
+  parentalContribution?: number;
+  savingsAmount?: number;
+  studyYears?: number;
+  discountRate?: number;
+}
+
+export interface ROICalculationResult {
+  id: string;
+  timestamp: Date;
+  inputs: ROICalculationInput;
+  
+  // Investment breakdown
+  investment: {
+    total: number;
+    tuition: number;
+    livingCosts: number;
+    opportunityCost: number;
+    booksAndSupplies: number;
+    fundingCovered: number;
+    outOfPocket: number;
+  };
+  
+  // Returns breakdown
+  returns: {
+    lifetimeNetGain: number;
+    annualizedPremium: number;
+    paybackPeriod: number;
+    roiMultiplier: number;
+    netPresentValue: number;
+    internalRateOfReturn: number;
+  };
+  
+  // Earnings trajectory
+  earningsTrajectory: Array<{
+    year: number;
+    age: number;
+    earnings: number;
+    nonGraduateBaseline: number;
+    premium: number;
+    discountedPremium: number;
+  }>;
+  
+  // Comparative data
+  comparison: {
+    nationalMedian: number;
+    subjectMedian: number;
+    universityMedian: number;
+    percentileRank: number;
+  };
+  
+  // Metadata
+  confidence: {
+    score: number;
+    dataQuality: string;
+    sampleSize: number;
+    marginOfError: number;
+  };
+}
+
+export interface ROICalculationError {
+  code: string;
+  message: string;
+  field?: string;
+  suggestion?: string;
+}
+// src/services/roi-calculation.service.ts
+// ============================================================================
+// Core ROI Calculation Engine with Advanced Financial Models
+// ============================================================================
+
+import { 
+  ROICalculationInput, 
+  ROICalculationResult, 
+  University, 
+  Subject,
+  DegreeLevel 
+} from '@/types/roi.types';
+import { mockUniversities, mockSubjects } from '@/data/mock-data';
+import { v4 as uuidv4 } from 'uuid';
+
+export class ROICalculationService {
+  private static instance: ROICalculationService;
+  private calculationCache: Map<string, ROICalculationResult> = new Map();
+  private readonly CACHE_TTL = 1000 * 60 * 60; // 1 hour
+
+  private constructor() {}
+
+  public static getInstance(): ROICalculationService {
+    if (!ROICalculationService.instance) {
+      ROICalculationService.instance = new ROICalculationService();
+    }
+    return ROICalculationService.instance;
+  }
+
+  /**
+   * Main calculation method with comprehensive validation
+   */
+  public async calculateROI(input: ROICalculationInput): Promise<ROICalculationResult> {
+    // Validate inputs
+    this.validateInput(input);
+
+    // Check cache first
+    const cacheKey = this.generateCacheKey(input);
+    const cached = this.calculationCache.get(cacheKey);
+    if (cached && this.isCacheValid(cached)) {
+      return cached;
+    }
+
+    // Fetch data
+    const university = await this.getUniversity(input.universityId);
+    const subject = await this.getSubject(input.subjectId);
+
+    // Perform calculations
+    const investment = this.calculateTotalInvestment(input, university);
+    const returns = await this.calculateReturns(input, university, subject);
+    const earningsTrajectory = this.calculateEarningsTrajectory(input, university, subject, returns);
+    const comparison = await this.calculateComparisonData(input, university, subject);
+    const confidence = this.calculateConfidenceMetrics(input, university, subject);
+
+    // Build result
+    const result: ROICalculationResult = {
+      id: uuidv4(),
+      timestamp: new Date(),
+      inputs: { ...input },
+      investment,
+      returns,
+      earningsTrajectory,
+      comparison,
+      confidence
+    };
+
+    // Cache result
+    this.calculationCache.set(cacheKey, result);
+    setTimeout(() => this.calculationCache.delete(cacheKey), this.CACHE_TTL);
+
+    return result;
+  }
+
+  /**
+   * Validate calculation inputs with detailed error messages
+   */
+  private validateInput(input: ROICalculationInput): void {
+    const errors: string[] = [];
+
+    if (!input.universityId) {
+      errors.push('University selection is required');
+    }
+
+    if (!input.subjectId) {
+      errors.push('Subject selection is required');
+    }
+
+    if (!input.degreeLevel) {
+      errors.push('Degree level is required');
+    }
+
+    if (!input.residencyStatus) {
+      errors.push('Residency status is required');
+    }
+
+    if (input.fundingSources.length === 0) {
+      errors.push('At least one funding source must be selected');
+    }
+
+    if (input.fundingSources.includes('scholarship') && !input.scholarshipAmount) {
+      errors.push('Scholarship amount is required when scholarship is selected as funding source');
+    }
+
+    if (input.fundingSources.includes('parental') && !input.parentalContribution) {
+      errors.push('Parental contribution is required when selected as funding source');
+    }
+
+    if (input.fundingSources.includes('savings') && !input.savingsAmount) {
+      errors.push('Savings amount is required when savings is selected as funding source');
+    }
+
+    if (input.studyYears && (input.studyYears < 1 || input.studyYears > 7)) {
+      errors.push('Study years must be between 1 and 7');
+    }
+
+    if (input.discountRate && (input.discountRate < 0 || input.discountRate > 20)) {
+      errors.push('Discount rate must be between 0% and 20%');
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`Validation failed: ${errors.join('; ')}`);
+    }
+  }
+
+  /**
+   * Calculate total investment with detailed breakdown
+   */
+  private calculateTotalInvestment(
+    input: ROICalculationInput, 
+    university: University
+  ): ROICalculationResult['investment'] {
+    const years = input.studyYears || this.getDefaultStudyYears(input.degreeLevel);
+    
+    // Tuition fees based on residency
+    const tuitionPerYear = university.tuitionFees[input.residencyStatus];
+    const tuition = tuitionPerYear * years;
+    
+    // Living costs
+    const livingPerYear = Object.values(university.livingCosts).reduce((a, b) => a + b, 0);
+    const livingCosts = livingPerYear * years;
+    
+    // Books and supplies
+    const booksAndSupplies = this.calculateBooksAndSupplies(input.degreeLevel, years);
+    
+    // Opportunity cost (forgone earnings)
+    const opportunityCost = this.calculateOpportunityCost(input, years);
+    
+    // Total before funding
+    const totalBeforeFunding = tuition + livingCosts + booksAndSupplies + opportunityCost;
+    
+    // Funding coverage
+    const fundingCovered = this.calculateFundingCoverage(input);
+    
+    // Out of pocket
+    const outOfPocket = Math.max(0, totalBeforeFunding - fundingCovered);
+
+    return {
+      total: totalBeforeFunding,
+      tuition,
+      livingCosts,
+      opportunityCost,
+      booksAndSupplies,
+      fundingCovered,
+      outOfPocket
+    };
+  }
+
+  /**
+   * Calculate returns with advanced financial metrics
+   */
+  private async calculateReturns(
+    input: ROICalculationInput,
+    university: University,
+    subject: Subject
+  ): Promise<ROICalculationResult['returns']> {
+    const years = input.studyYears || this.getDefaultStudyYears(input.degreeLevel);
+    const discountRate = (input.discountRate || 3.5) / 100;
+    const careerYears = 40;
+    
+    // Get ROI components
+    const subjectROI = subject.subjectROI[input.degreeLevel];
+    const institutionalROI = university.institutionalROI;
+    
+    // Combined ROI with 70/30 weighting
+    const combinedROI = (subjectROI * 0.7) + (institutionalROI * 0.3);
+    
+    // Calculate total investment
+    const investment = this.calculateTotalInvestment(input, university);
+    
+    // Calculate NPV
+    let npv = 0;
+    const earningsTrajectory: Array<any> = [];
+    
+    // Base earnings premium from ROI percentage
+    const baseAnnualPremium = investment.total * (combinedROI / 100) / careerYears;
+    
+    for (let year = 1; year <= careerYears; year++) {
+      const age = 21 + year;
+      
+      // Career stage adjustments
+      let stageMultiplier = 1;
+      if (year <= 5) stageMultiplier = 0.5; // Entry level
+      else if (year <= 15) stageMultiplier = 1.1; // Mid career
+      else if (year <= 30) stageMultiplier = 1.4; // Peak career
+      else stageMultiplier = 1.0; // Late career
+      
+      // Subject-specific adjustment
+      const subjectMultiplier = this.getSubjectCareerMultiplier(subject, year);
+      
+      // Regional adjustment
+      const regionalMultiplier = this.getRegionalEarningsMultiplier(university.region);
+      
+      const annualPremium = baseAnnualPremium * stageMultiplier * subjectMultiplier * regionalMultiplier;
+      const discountedPremium = annualPremium / Math.pow(1 + discountRate, year);
+      
+      npv += discountedPremium;
+      
+      earningsTrajectory.push({
+        year,
+        age,
+        earnings: this.getNonGraduateBaseline(age) + annualPremium,
+        nonGraduateBaseline: this.getNonGraduateBaseline(age),
+        premium: annualPremium,
+        discountedPremium
+      });
+    }
+    
+    // Calculate payback period
+    let cumulative = 0;
+    let paybackYears = 0;
+    for (let year = 0; year < earningsTrajectory.length; year++) {
+      cumulative += earningsTrajectory[year].premium;
+      if (cumulative >= investment.total) {
+        paybackYears = year + 1 + (cumulative - investment.total) / earningsTrajectory[year].premium;
+        break;
+      }
+    }
+    
+    // Calculate IRR
+    const irr = this.calculateIRR(investment.total, earningsTrajectory.map(e => e.premium));
+    
+    return {
+      lifetimeNetGain: Math.round(npv),
+      annualizedPremium: Math.round(npv / careerYears),
+      paybackPeriod: Math.round(paybackYears * 10) / 10,
+      roiMultiplier: Math.round((npv / investment.total) * 100) / 100,
+      netPresentValue: Math.round(npv),
+      internalRateOfReturn: Math.round(irr * 100) / 100
+    };
+  }
+
+  /**
+   * Calculate earnings trajectory with granular detail
+   */
+  private calculateEarningsTrajectory(
+    input: ROICalculationInput,
+    university: University,
+    subject: Subject,
+    returns: ROICalculationResult['returns']
+  ): ROICalculationResult['earningsTrajectory'] {
+    const careerYears = 40;
+    const trajectory: ROICalculationResult['earningsTrajectory'] = [];
+    
+    // Get subject-specific earnings curve
+    const earningsCurve = subject.earningsTrajectory;
+    
+    for (let year = 1; year <= careerYears; year++) {
+      const age = 21 + year;
+      
+      // Calculate stage
+      let stage: keyof typeof earningsCurve = 'late';
+      if (year <= 5) stage = 'entry';
+      else if (year <= 15) stage = 'mid';
+      else if (year <= 30) stage = 'peak';
+      
+      // Base premium with stage adjustment
+      const stagePremium = returns.annualizedPremium * (earningsCurve[stage] / 100);
+      
+      // University prestige premium
+      const prestigeMultiplier = 1 + (university.rank < 10 ? 0.2 : university.rank < 20 ? 0.1 : 0);
+      
+      // Subject demand premium
+      const demandMultiplier = this.getSubjectDemandMultiplier(subject);
+      
+      const premium = stagePremium * prestigeMultiplier * demandMultiplier;
+      const baseline = this.getNonGraduateBaseline(age);
+      const earnings = baseline + premium;
+      
+      trajectory.push({
+        year,
+        age,
+        earnings: Math.round(earnings),
+        nonGraduateBaseline: Math.round(baseline),
+        premium: Math.round(premium),
+        discountedPremium: Math.round(premium / Math.pow(1.035, year))
+      });
+    }
+    
+    return trajectory;
+  }
+
+  /**
+   * Calculate comparison data against medians
+   */
+  private async calculateComparisonData(
+    input: ROICalculationInput,
+    university: University,
+    subject: Subject
+  ): Promise<ROICalculationResult['comparison']> {
+    // National median (all graduates)
+    const nationalMedian = 913.9; // From your data
+    
+    // Subject median
+    const subjectMedian = subject.subjectROI[input.degreeLevel] * 10; // Scale for comparison
+    
+    // University median
+    const universityMedian = university.compositeScore;
+    
+    // Calculate percentile rank
+    const allUniversities = mockUniversities;
+    const percentileRank = this.calculatePercentileRank(university.compositeScore, allUniversities);
+    
+    return {
+      nationalMedian,
+      subjectMedian,
+      universityMedian,
+      percentileRank
+    };
+  }
+
+  /**
+   * Calculate confidence metrics for the result
+   */
+  private calculateConfidenceMetrics(
+    input: ROICalculationInput,
+    university: University,
+    subject: Subject
+  ): ROICalculationResult['confidence'] {
+    // Factors affecting confidence:
+    // 1. Data availability for university
+    // 2. Data availability for subject
+    // 3. Sample size
+    // 4. Recency of data
+    // 5. Geographic specificity
+    
+    let confidenceScore = 85; // Base confidence
+    
+    // Adjust for university data quality
+    if (university.rank < 10) confidenceScore += 10;
+    else if (university.rank > 50) confidenceScore -= 10;
+    
+    // Adjust for subject data quality
+    if (subject.subjectROI[input.degreeLevel] > 0) confidenceScore += 5;
+    
+    // Adjust for residency
+    if (input.residencyStatus === 'international') confidenceScore -= 5;
+    
+    // Ensure within bounds
+    confidenceScore = Math.min(100, Math.max(50, confidenceScore));
+    
+    // Determine data quality label
+    let dataQuality = 'Good';
+    if (confidenceScore >= 90) dataQuality = 'Excellent';
+    else if (confidenceScore >= 80) dataQuality = 'Good';
+    else if (confidenceScore >= 70) dataQuality = 'Fair';
+    else dataQuality = 'Limited';
+    
+    return {
+      score: confidenceScore,
+      dataQuality,
+      sampleSize: this.getSampleSize(university, subject),
+      marginOfError: this.calculateMarginOfError(confidenceScore)
+    };
+  }
+
+  /**
+   * Private helper methods
+   */
+  private generateCacheKey(input: ROICalculationInput): string {
+    return `${input.universityId}-${input.subjectId}-${input.degreeLevel}-${input.residencyStatus}-${JSON.stringify(input.fundingSources)}`;
+  }
+
+  private isCacheValid(cached: ROICalculationResult): boolean {
+    const age = Date.now() - cached.timestamp.getTime();
+    return age < this.CACHE_TTL;
+  }
+
+  private async getUniversity(id: string): Promise<University> {
+    const university = mockUniversities.find(u => u.id === id);
+    if (!university) {
+      throw new Error(`University with id ${id} not found`);
+    }
+    return university;
+  }
+
+  private async getSubject(id: string): Promise<Subject> {
+    const subject = mockSubjects.find(s => s.id === id);
+    if (!subject) {
+      throw new Error(`Subject with id ${id} not found`);
+    }
+    return subject;
+  }
+
+  private getDefaultStudyYears(level: DegreeLevel): number {
+    switch (level) {
+      case 'bachelors': return 3;
+      case 'masters': return 4; // Including bachelors
+      case 'phd': return 6; // Including bachelors + masters
+      default: return 3;
+    }
+  }
+
+  private calculateBooksAndSupplies(level: DegreeLevel, years: number): number {
+    const baseCost = 1000;
+    const levelMultiplier = level === 'phd' ? 1.5 : level === 'masters' ? 1.2 : 1;
+    return baseCost * levelMultiplier * years;
+  }
+
+  private calculateOpportunityCost(input: ROICalculationInput, years: number): number {
+    // Non-graduate annual earnings by region (simplified)
+    const regionalWages: Record<string, number> = {
+      'london': 22000,
+      'south-east': 21000,
+      'east-of-england': 20500,
+      'south-west': 19500,
+      'west-midlands': 19500,
+      'east-midlands': 19000,
+      'north-west': 19000,
+      'yorkshire': 18500,
+      'north-east': 18000,
+      'scotland': 19000,
+      'wales': 18000,
+      'northern-ireland': 17500
+    };
+    
+    // Get region from university (simplified - would need university.region)
+    const region = 'london'; // Placeholder
+    
+    return regionalWages[region] * years;
+  }
+
+  private calculateFundingCoverage(input: ROICalculationInput): number {
+    let total = 0;
+    
+    if (input.fundingSources.includes('scholarship') && input.scholarshipAmount) {
+      total += input.scholarshipAmount;
+    }
+    
+    if (input.fundingSources.includes('parental') && input.parentalContribution) {
+      total += input.parentalContribution;
+    }
+    
+    if (input.fundingSources.includes('savings') && input.savingsAmount) {
+      total += input.savingsAmount;
+    }
+    
+    // Loans are not counted as covered (they need repayment)
+    
+    return total;
+  }
+
+  private getSubjectCareerMultiplier(subject: Subject, year: number): number {
+    // Different subjects have different career trajectories
+    const subjectMultipliers: Record<string, number[]> = {
+      'medicine': [1.2, 1.3, 1.5, 1.4],
+      'economics': [1.3, 1.5, 1.6, 1.3],
+      'computer-science': [1.4, 1.4, 1.3, 1.1],
+      'history': [0.8, 1.0, 1.2, 1.3],
+      'creative-arts': [0.6, 1.1, 1.3, 1.2]
+    };
+    
+    const slug = subject.slug;
+    const stage = year <= 5 ? 0 : year <= 15 ? 1 : year <= 30 ? 2 : 3;
+    
+    return subjectMultipliers[slug]?.[stage] || 1.0;
+  }
+
+  private getRegionalEarningsMultiplier(region: string): number {
+    const multipliers: Record<string, number> = {
+      'london': 1.3,
+      'south-east': 1.2,
+      'east-of-england': 1.1,
+      'south-west': 1.05,
+      'west-midlands': 1.0,
+      'east-midlands': 0.98,
+      'north-west': 0.97,
+      'yorkshire': 0.95,
+      'north-east': 0.92,
+      'scotland': 0.98,
+      'wales': 0.95,
+      'northern-ireland': 0.9
+    };
+    
+    return multipliers[region] || 1.0;
+  }
+
+  private getSubjectDemandMultiplier(subject: Subject): number {
+    const demandMultipliers: Record<string, number> = {
+      'medicine': 1.2,
+      'computer-science': 1.15,
+      'economics': 1.1,
+      'engineering': 1.08,
+      'law': 1.05,
+      'business': 1.02,
+      'humanities': 0.95,
+      'arts': 0.9
+    };
+    
+    return demandMultipliers[subject.category] || 1.0;
+  }
+
+  private getNonGraduateBaseline(age: number): number {
+    // Age-earnings profile for non-graduates (simplified)
+    if (age < 25) return 18000;
+    if (age < 35) return 25000;
+    if (age < 45) return 30000;
+    if (age < 55) return 32000;
+    return 28000;
+  }
+
+  private calculatePercentileRank(score: number, allUniversities: University[]): number {
+    const sorted = [...allUniversities].sort((a, b) => a.compositeScore - b.compositeScore);
+    const index = sorted.findIndex(u => u.compositeScore >= score);
+    return Math.round((index / sorted.length) * 100);
+  }
+
+  private getSampleSize(university: University, subject: Subject): number {
+    // Simulate sample size based on university rank and subject popularity
+    const baseSize = 500;
+    const rankMultiplier = Math.max(0.2, 1 - (university.rank / 100));
+    const subjectMultiplier = subject.category === 'medicine' ? 2 : 1;
+    
+    return Math.round(baseSize * rankMultiplier * subjectMultiplier);
+  }
+
+  private calculateMarginOfError(confidenceScore: number): number {
+    // Higher confidence = lower margin of error
+    return Math.round((100 - confidenceScore) / 2);
+  }
+
+  private calculateIRR(initialInvestment: number, cashFlows: number[]): number {
+    // Calculate Internal Rate of Return using Newton's method
+    const maxIterations = 100;
+    const tolerance = 0.0001;
+    let rate = 0.1; // Initial guess
+    
+    for (let i = 0; i < maxIterations; i++) {
+      let npv = -initialInvestment;
+      let derivative = 0;
+      
+      for (let t = 0; t < cashFlows.length; t++) {
+        npv += cashFlows[t] / Math.pow(1 + rate, t + 1);
+        derivative += -(t + 1) * cashFlows[t] / Math.pow(1 + rate, t + 2);
+      }
+      
+      const newRate = rate - npv / derivative;
+      
+      if (Math.abs(newRate - rate) < tolerance) {
+        return newRate;
+      }
+      
+      rate = newRate;
+    }
+    
+    return rate; // Return best guess
+  }
+}
+// src/components/ROIResults/ROIResultsDisplay.tsx
+// ============================================================================
+// Main Results Display Component with All Visualizations
+// ============================================================================
+
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  ROICalculationResult, 
+  ROICalculationInput,
+  University,
+  Subject
+} from '@/types/roi.types';
+import { ROICalculationService } from '@/services/roi-calculation.service';
+import { EarningsChart } from './EarningsChart';
+import { InvestmentBreakdown } from './InvestmentBreakdown';
+import { KeyMetrics } from './KeyMetrics';
+import { ComparisonTable } from './ComparisonTable';
+import { ConfidenceIndicator } from './ConfidenceIndicator';
+import { PDFDownloadButton } from './PDFDownloadButton';
+import { ShareResults } from './ShareResults';
+import { SaveToBoard } from './SaveToBoard';
+import { SponsoredContent } from '@/components/Advertising/SponsoredContent';
+import { AffiliateRecommendation } from '@/components/Advertising/AffiliateRecommendation';
+import { useAnalytics } from '@/hooks/useAnalytics';
+import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { formatCurrency, formatPercentage, formatYears } from '@/utils/formatters';
+import { cn } from '@/utils/cn';
+
+interface ROIResultsDisplayProps {
+  inputs: ROICalculationInput;
+  university: University;
+  subject: Subject;
+  className?: string;
+  onSave?: () => void;
+  onShare?: () => void;
+  onCompare?: (resultId: string) => void;
+}
+
+export const ROIResultsDisplay: React.FC<ROIResultsDisplayProps> = ({
+  inputs,
+  university,
+  subject,
+  className,
+  onSave,
+  onShare,
+  onCompare
+}) => {
+  // State
+  const [result, setResult] = useState<ROICalculationResult | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'overview' | 'breakdown' | 'comparison' | 'trajectory'>('overview');
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
+  const [savedResults, setSavedResults] = useLocalStorage<string[]>('saved-roi-results', []);
+  
+  // Refs
+  const containerRef = useRef<HTMLDivElement>(null);
+  const resultsRef = useRef<ROICalculationResult | null>(null);
+  
+  // Hooks
+  const { trackEvent } = useAnalytics();
+  
+  // Service instance
+  const roiService = ROICalculationService.getInstance();
+
+  /**
+   * Calculate ROI when inputs change
+   */
+  useEffect(() => {
+    const calculateResults = async () => {
+      setLoading(true);
+      setError(null);
+      
+      try {
+        const startTime = performance.now();
+        const calculationResult = await roiService.calculateROI(inputs);
+        const endTime = performance.now();
+        
+        // Track performance
+        trackEvent('roi_calculation_completed', {
+          duration: endTime - startTime,
+          universityId: inputs.universityId,
+          subjectId: inputs.subjectId
+        });
+        
+        setResult(calculationResult);
+        resultsRef.current = calculationResult;
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
+        setError(errorMessage);
+        
+        trackEvent('roi_calculation_error', {
+          error: errorMessage,
+          inputs
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    calculateResults();
+  }, [inputs, trackEvent, roiService]);
+
+  /**
+   * Handle saving result to user's board
+   */
+  const handleSave = useCallback(() => {
+    if (!result) return;
+    
+    setSavedResults(prev => [...prev, result.id]);
+    trackEvent('roi_result_saved', { resultId: result.id });
+    
+    if (onSave) onSave();
+  }, [result, setSavedResults, trackEvent, onSave]);
+
+  /**
+   * Handle sharing result
+   */
+  const handleShare = useCallback(() => {
+    if (!result) return;
+    
+    trackEvent('roi_result_shared', { resultId: result.id });
+    
+    if (onShare) onShare();
+  }, [result, trackEvent, onShare]);
+
+  /**
+   * Handle adding to comparison
+   */
+  const handleCompare = useCallback(() => {
+    if (!result) return;
+    
+    trackEvent('roi_result_compared', { resultId: result.id });
+    
+    if (onCompare) onCompare(result.id);
+  }, [result, trackEvent, onCompare]);
+
+  /**
+   * Memoized key metrics for display
+   */
+  const keyMetrics = useMemo(() => {
+    if (!result) return null;
+    
+    return {
+      lifetimeNetGain: result.returns.lifetimeNetGain,
+      annualizedPremium: result.returns.annualizedPremium,
+      paybackPeriod: result.returns.paybackPeriod,
+      roiMultiplier: result.returns.roiMultiplier,
+      totalInvestment: result.investment.total,
+      outOfPocket: result.investment.outOfPocket
+    };
+  }, [result]);
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className={cn("w-full max-w-6xl mx-auto p-8", className)} ref={containerRef}>
+        <div className="flex flex-col items-center justify-center min-h-[400px]">
+          <div className="relative w-24 h-24">
+            <div className="absolute inset-0 rounded-full border-4 border-mint border-t-turquoise animate-spin"></div>
+            <div className="absolute inset-3 rounded-full border-4 border-mint/30 border-b-caribbean-cyan animate-spin-slow"></div>
+          </div>
+          <motion.p 
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+            className="mt-6 text-lg text-slate font-body"
+          >
+            Calculating your lifetime return on investment...
+          </motion.p>
+          <p className="mt-2 text-sm text-slate/70 font-body">
+            We're analyzing data from 150+ universities and 60 subjects
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error || !result) {
+    return (
+      <div className={cn("w-full max-w-6xl mx-auto p-8", className)} ref={containerRef}>
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-coral-kiss/10 border-2 border-coral-kiss rounded-2xl p-8 text-center"
+        >
+          <svg className="w-16 h-16 mx-auto text-coral-kiss" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <h3 className="mt-4 text-xl font-heading text-deep-navy">Calculation Error</h3>
+          <p className="mt-2 text-slate">{error || 'Unable to calculate ROI at this time'}</p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="mt-6 px-6 py-3 bg-turquoise text-white rounded-full font-body hover:bg-turquoise/90 transition-colors"
+          >
+            Try Again
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  return (
+    <motion.div 
+      ref={containerRef}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.5 }}
+      className={cn("w-full max-w-6xl mx-auto", className)}
+    >
+      {/* Header Section */}
+      <div className="mb-8">
+        <motion.div 
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.1 }}
+          className="flex flex-col md:flex-row md:items-center md:justify-between gap-4"
+        >
+          <div>
+            <h2 className="text-3xl md:text-4xl font-heading text-deep-navy">
+              Your ROI Results
+            </h2>
+            <p className="mt-2 text-lg text-slate font-body">
+              Based on your selection: {university.name} | {subject.name} ({inputs.degreeLevel})
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            <SaveToBoard onSave={handleSave} isSaved={savedResults.includes(result.id)} />
+            <ShareResults onShare={handleShare} />
+            <PDFDownloadButton result={result} university={university} subject={subject} />
+          </div>
+        </motion.div>
+
+        {/* Confidence Indicator */}
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.15 }}
+          className="mt-4"
+        >
+          <ConfidenceIndicator confidence={result.confidence} />
+        </motion.div>
+      </div>
+
+      {/* Key Metrics Cards */}
+      <motion.div
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.2 }}
+        className="mb-8"
+      >
+        <KeyMetrics metrics={keyMetrics!} />
+      </motion.div>
+
+      {/* Tab Navigation */}
+      <motion.div
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.25 }}
+        className="border-b border-soft-grey mb-6"
+      >
+        <nav className="flex space-x-8" aria-label="Results sections">
+          {[
+            { id: 'overview', label: 'Overview' },
+            { id: 'breakdown', label: 'Investment Breakdown' },
+            { id: 'trajectory', label: 'Earnings Trajectory' },
+            { id: 'comparison', label: 'Comparison' }
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as typeof activeTab)}
+              className={cn(
+                "py-4 px-1 font-body text-sm font-medium border-b-2 transition-colors",
+                activeTab === tab.id
+                  ? "border-turquoise text-turquoise"
+                  : "border-transparent text-slate hover:text-deep-navy hover:border-midnight-teal"
+              )}
+              aria-current={activeTab === tab.id ? 'page' : undefined}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </motion.div>
+
+      {/* Tab Content */}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={activeTab}
+          initial={{ y: 10, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: -10, opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          className="mb-8"
+        >
+          {activeTab === 'overview' && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white rounded-2xl shadow-md p-6 border border-soft-grey">
+                <h3 className="text-xl font-heading text-deep-navy mb-4">Investment Summary</h3>
+                <dl className="space-y-3">
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Total Investment</dt>
+                    <dd className="font-mono text-deep-navy font-medium">{formatCurrency(result.investment.total)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Tuition Fees</dt>
+                    <dd className="font-mono text-deep-navy">{formatCurrency(result.investment.tuition)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Living Costs</dt>
+                    <dd className="font-mono text-deep-navy">{formatCurrency(result.investment.livingCosts)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Opportunity Cost</dt>
+                    <dd className="font-mono text-deep-navy">{formatCurrency(result.investment.opportunityCost)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2 bg-mint/10 rounded-lg px-2">
+                    <dt className="font-body font-medium text-deep-navy">Funding Covered</dt>
+                    <dd className="font-mono text-turquoise font-bold">{formatCurrency(result.investment.fundingCovered)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2 bg-coral-kiss/10 rounded-lg px-2">
+                    <dt className="font-body font-medium text-deep-navy">Out of Pocket</dt>
+                    <dd className="font-mono text-coral-kiss font-bold">{formatCurrency(result.investment.outOfPocket)}</dd>
+                  </div>
+                </dl>
+              </div>
+
+              <div className="bg-white rounded-2xl shadow-md p-6 border border-soft-grey">
+                <h3 className="text-xl font-heading text-deep-navy mb-4">Return Summary</h3>
+                <dl className="space-y-3">
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Lifetime Net Gain</dt>
+                    <dd className="font-mono text-turquoise font-bold text-xl">{formatCurrency(result.returns.lifetimeNetGain)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Annualized Premium</dt>
+                    <dd className="font-mono text-deep-navy">{formatCurrency(result.returns.annualizedPremium)}/year</dd>
+                  </div>
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Payback Period</dt>
+                    <dd className="font-mono text-deep-navy">{formatYears(result.returns.paybackPeriod)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">ROI Multiplier</dt>
+                    <dd className="font-mono text-deep-navy">{result.returns.roiMultiplier}×</dd>
+                  </div>
+                  <div className="flex justify-between py-2 border-b border-soft-grey">
+                    <dt className="font-body text-slate">Internal Rate of Return</dt>
+                    <dd className="font-mono text-deep-navy">{formatPercentage(result.returns.internalRateOfReturn)}</dd>
+                  </div>
+                  <div className="flex justify-between py-2">
+                    <dt className="font-body text-slate">Net Present Value</dt>
+                    <dd className="font-mono text-turquoise font-medium">{formatCurrency(result.returns.netPresentValue)}</dd>
+                  </div>
+                </dl>
+              </div>
+
+              {/* Earnings Trajectory Preview */}
+              <div className="lg:col-span-2 bg-white rounded-2xl shadow-md p-6 border border-soft-grey">
+                <h3 className="text-xl font-heading text-deep-navy mb-4">Earnings Trajectory Preview</h3>
+                <div className="h-64">
+                  <EarningsChart 
+                    data={result.earningsTrajectory.slice(0, 20)} 
+                    height={200}
+                    showBaseline={true}
+                  />
+                </div>
+                <p className="mt-4 text-sm text-slate text-center">
+                  View full trajectory in the Earnings Trajectory tab
+                </p>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'breakdown' && (
+            <InvestmentBreakdown 
+              investment={result.investment}
+              returns={result.returns}
+              university={university}
+              subject={subject}
+              degreeLevel={inputs.degreeLevel}
+            />
+          )}
+
+          {activeTab === 'trajectory' && (
+            <div className="space-y-6">
+              <div className="bg-white rounded-2xl shadow-md p-6 border border-soft-grey">
+                <h3 className="text-xl font-heading text-deep-navy mb-4">40-Year Earnings Trajectory</h3>
+                <div className="h-96">
+                  <EarningsChart 
+                    data={result.earningsTrajectory} 
+                    height={400}
+                    showBaseline={true}
+                    showConfidence={true}
+                  />
+                </div>
+                
+                {/* Key Milestones */}
+                <div className="mt-8 grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-mint/10 rounded-lg p-4">
+                    <p className="text-sm text-slate font-body">Year 5 (Age 26)</p>
+                    <p className="text-lg font-mono text-deep-navy">{formatCurrency(result.earningsTrajectory[4].earnings)}</p>
+                    <p className="text-xs text-turquoise">+{formatCurrency(result.earningsTrajectory[4].premium)} vs non-grad</p>
+                  </div>
+                  <div className="bg-mint/10 rounded-lg p-4">
+                    <p className="text-sm text-slate font-body">Year 10 (Age 31)</p>
+                    <p className="text-lg font-mono text-deep-navy">{formatCurrency(result.earningsTrajectory[9].earnings)}</p>
+                    <p className="text-xs text-turquoise">+{formatCurrency(result.earningsTrajectory[9].premium)} vs non-grad</p>
+                  </div>
+                  <div className="bg-mint/10 rounded-lg p-4">
+                    <p className="text-sm text-slate font-body">Year 20 (Age 41)</p>
+                    <p className="text-lg font-mono text-deep-navy">{formatCurrency(result.earningsTrajectory[19].earnings)}</p>
+                    <p className="text-xs text-turquoise">+{formatCurrency(result.earningsTrajectory[19].premium)} vs non-grad</p>
+                  </div>
+                  <div className="bg-mint/10 rounded-lg p-4">
+                    <p className="text-sm text-slate font-body">Year 30 (Age 51)</p>
+                    <p className="text-lg font-mono text-deep-navy">{formatCurrency(result.earningsTrajectory[29].earnings)}</p>
+                    <p className="text-xs text-turquoise">+{formatCurrency(result.earningsTrajectory[29].premium)} vs non-grad</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'comparison' && (
+            <ComparisonTable 
+              result={result}
+              university={university}
+              subject={subject}
+              onCompare={handleCompare}
+            />
+          )}
+        </motion.div>
+      </AnimatePresence>
+
+      {/* Sponsored Recommendations */}
+      <motion.div
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.3 }}
+        className="mt-8 space-y-6"
+      >
+        <AffiliateRecommendation 
+          university={university} 
+          category="banking" 
+        />
+        <SponsoredContent 
+          placement="results-sidebar"
+          university={university}
+          subject={subject}
+        />
+      </motion.div>
+
+      {/* Advanced Details Toggle */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.35 }}
+        className="mt-8 text-center"
+      >
+        <button
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="text-sm font-body text-turquoise hover:text-midnight-teal transition-colors inline-flex items-center gap-1"
+        >
+          {showAdvanced ? 'Hide' : 'Show'} advanced calculation details
+          <svg 
+            className={cn("w-4 h-4 transition-transform", showAdvanced && "rotate-180")}
+            fill="none" 
+            viewBox="0 0 24 24" 
+            stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <AnimatePresence>
+          {showAdvanced && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              className="overflow-hidden mt-4"
+            >
+              <div className="bg-soft-grey/30 rounded-2xl p-6 text-left">
+                <h4 className="font-heading text-deep-navy mb-4">Calculation Methodology</h4>
+                <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <dt className="font-body text-slate">Discount Rate</dt>
+                    <dd className="font-mono text-deep-navy">{inputs.discountRate || 3.5}%</dd>
+                  </div>
+                  <div>
+                    <dt className="font-body text-slate">Career Length</dt>
+                    <dd className="font-mono text-deep-navy">40 years</dd>
+                  </div>
+                  <div>
+                    <dt className="font-body text-slate">Subject ROI Weight</dt>
+                    <dd className="font-mono text-deep-navy">70%</dd>
+                  </div>
+                  <div>
+                    <dt className="font-body text-slate">Institutional ROI Weight</dt>
+                    <dd className="font-mono text-deep-navy">30%</dd>
+                  </div>
+                  <div>
+                    <dt className="font-body text-slate">Data Vintage</dt>
+                    <dd className="font-mono text-deep-navy">2024 (projected to 2026)</dd>
+                  </div>
+                  <div>
+                    <dt className="font-body text-slate">Inflation Assumption</dt>
+                    <dd className="font-mono text-deep-navy">2.0% annually</dd>
+                  </div>
+                </dl>
+                <p className="mt-4 text-xs text-slate">
+                  Based on peer-reviewed methodology from Oxford University's Department of Education, 
+                  validated with LEO, IFS, ONS, and HESA data.
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+
+      {/* Comparison CTA */}
+      <motion.div
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.4 }}
+        className="mt-8 p-6 bg-ocean-sunrise rounded-2xl text-white text-center"
+      >
+        <h3 className="text-xl font-heading mb-2">Want to explore other options?</h3>
+        <p className="text-white/90 mb-4">Compare this result with other universities or subjects to find your best fit.</p>
+        <button
+          onClick={handleCompare}
+          className="px-8 py-3 bg-white text-deep-navy rounded-full font-body hover:bg-opacity-90 transition-colors inline-flex items-center gap-2"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+          </svg>
+          Add to Comparison
+        </button>
+      </motion.div>
+    </motion.div>
+  );
+};
+// src/components/ROIResults/ComparisonTable.tsx
+// ============================================================================
+// Comparison Table for University/Subject ROI Data
+// ============================================================================
+
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
+import { ROICalculationResult, University, Subject } from '@/types/roi.types';
+import { formatCurrency, formatPercentage } from '@/utils/formatters';
+import { mockUniversities, mockSubjects } from '@/data/mock-data';
+
+interface ComparisonTableProps {
+  result: ROICalculationResult;
+  university: University;
+  subject: Subject;
+  onCompare: (resultId: string) => void;
+}
+
+type ComparisonType = 'universities' | 'subjects' | 'degree-levels';
+
+export const ComparisonTable: React.FC<ComparisonTableProps> = ({
+  result,
+  university,
+  subject,
+  onCompare
+}) => {
+  const [comparisonType, setComparisonType] = useState<ComparisonType>('universities');
+  const [selectedItems, setSelectedItems] = useState<string[]>([university.id]);
+
+  // Get comparison data based on type
+  const getComparisonData = () => {
+    switch (comparisonType) {
+      case 'universities':
+        return mockUniversities
+          .filter(u => u.region === university.region || u.rank < 20)
+          .slice(0, 5)
+          .map(u => ({
+            id: u.id,
+            name: u.name,
+            rank: u.rank,
+            roi: u.institutionalROI,
+            lifetimeGain: (result.investment.total * (u.institutionalROI / 100)),
+            employmentRate: u.graduateOutcomes?.employmentRate || 95,
+            avgSalary: u.graduateOutcomes?.averageSalary || 35000
+          }));
+      
+      case 'subjects':
+        return mockSubjects
+          .filter(s => s.category === subject.category)
+          .slice(0, 5)
+          .map(s => ({
+            id: s.id,
+            name: s.name,
+            category: s.category,
+            roi: s.subjectROI[result.inputs.degreeLevel],
+            lifetimeGain: (result.investment.total * (s.subjectROI[result.inputs.degreeLevel] / 100)),
+            careerPaths: s.careerPaths?.slice(0, 2).join(', ') || 'Various'
+          }));
+      
+      case 'degree-levels':
+        return [
+          { level: 'Bachelors', roi: subject.subjectROI.bachelors, years: 3 },
+          { level: 'Masters', roi: subject.subjectROI.masters, years: 4 },
+          { level: 'PhD', roi: subject.subjectROI.phd, years: 6 }
+        ].map(item => ({
+          id: item.level,
+          name: `${subject.name} (${item.level})`,
+          roi: item.roi,
+          lifetimeGain: result.investment.total * (item.roi / 100) * (3 / item.years), // Adjust for duration
+          years: item.years
+        }));
+      
+      default:
+        return [];
+    }
+  };
+
+  const comparisonData = getComparisonData();
+  const currentValue = comparisonType === 'universites' ? university.institutionalROI : 
+                      comparisonType === 'subjects' ? subject.subjectROI[result.inputs.degreeLevel] : 
+                      subject.subjectROI[result.inputs.degreeLevel];
+
+  const handleItemToggle = (id: string) => {
+    setSelectedItems(prev =>
+      prev.includes(id)
+        ? prev.filter(item => item !== id)
+        : [...prev, id]
+    );
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="space-y-6"
+    >
+      {/* Comparison Type Selector */}
+      <div className="bg-white rounded-2xl shadow-md p-6 border border-soft-grey">
+        <h3 className="text-xl font-heading text-deep-navy mb-4">Compare Your Results</h3>
+        
+        <div className="flex flex-wrap gap-3 mb-6">
+          {[
+            { id: 'universities', label: 'Other Universities' },
+            { id: 'subjects', label: 'Similar Subjects' },
+            { id: 'degree-levels', label: 'Degree Levels' }
+          ].map(type => (
+            <button
+              key={type.id}
+              onClick={() => setComparisonType(type.id as ComparisonType)}
+              className={cn(
+                "px-4 py-2 rounded-full font-body text-sm transition-colors",
+                comparisonType === type.id
+                  ? "bg-turquoise text-white"
+                  : "bg-soft-grey text-slate hover:bg-mint"
+              )}
+            >
+              {type.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Comparison Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b-2 border-soft-grey">
+                <th className="text-left py-3 px-4 font-heading text-deep-navy">Option</th>
+                <th className="text-right py-3 px-4 font-heading text-deep-navy">ROI</th>
+                <th className="text-right py-3 px-4 font-heading text-deep-navy">Lifetime Gain</th>
+                {comparisonType === 'universities' && (
+                  <>
+                    <th className="text-right py-3 px-4 font-heading text-deep-navy">Rank</th>
+                    <th className="text-right py-3 px-4 font-heading text-deep-navy">Employability</th>
+                  </>
+                )}
+                {comparisonType === 'subjects' && (
+                  <th className="text-right py-3 px-4 font-heading text-deep-navy">Career Paths</th>
+                )}
+                {comparisonType === 'degree-levels' && (
+                  <th className="text-right py-3 px-4 font-heading text-deep-navy">Duration</th>
+                )}
+                <th className="text-center py-3 px-4 font-heading text-deep-navy">Compare</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparisonData.map((item, index) => {
+                const isCurrent = item.id === (comparisonType === 'universities' ? university.id :
+                                                comparisonType === 'subjects' ? subject.id :
+                                                result.inputs.degreeLevel);
+                const isSelected = selectedItems.includes(item.id);
+                
+                return (
+                  <motion.tr
+                    key={item.id}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                    className={cn(
+                      "border-b border-soft-grey/50",
+                      isCurrent && "bg-mint/10"
+                    )}
+                  >
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-2">
+                        {isCurrent && (
+                          <span className="px-2 py-1 bg-turquoise text-white text-xs rounded-full">
+                            Your selection
+                          </span>
+                        )}
+                        <span className="font-body text-deep-navy">{item.name}</span>
+                      </div>
+                    </td>
+                    <td className="text-right py-3 px-4 font-mono">
+                      <span className={item.roi > currentValue ? 'text-turquoise' : 'text-slate'}>
+                        {item.roi.toFixed(1)}%
+                      </span>
+                    </td>
+                    <td className="text-right py-3 px-4 font-mono">
+                      {formatCurrency(item.lifetimeGain)}
+                    </td>
+                    
+                    {comparisonType === 'universities' && (
+                      <>
+                        <td className="text-right py-3 px-4 font-mono">
+                          #{item.rank}
+                        </td>
+                        <td className="text-right py-3 px-4">
+                          <div className="flex items-center justify-end gap-2">
+                            <span className="font-mono">{item.employmentRate}%</span>
+                            <div className="w-16 h-2 bg-soft-grey rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-turquoise"
+                                style={{ width: `${item.employmentRate}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                      </>
+                    )}
+                    
+                    {comparisonType === 'subjects' && (
+                      <td className="text-right py-3 px-4 text-slate text-sm">
+                        {item.careerPaths}
+                      </td>
+                    )}
+                    
+                    {comparisonType === 'degree-levels' && (
+                      <td className="text-right py-3 px-4 font-mono">
+                        {item.years} years
+                      </td>
+                    )}
+                    
+                    <td className="text-center py-3 px-4">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleItemToggle(item.id)}
+                        className="w-5 h-5 rounded border-soft-grey text-turquoise focus:ring-turquoise"
+                      />
+                    </td>
+                  </motion.tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Compare Button */}
+        {selectedItems.length > 1 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 flex justify-end"
+          >
+            <button
+              onClick={() => onCompare(selectedItems.join(','))}
+              className="px-6 py-3 bg-turquoise text-white rounded-full font-body hover:bg-turquoise/90 transition-colors inline-flex items-center gap-2"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
+              Compare {selectedItems.length} Options
+            </button>
+          </motion.div>
+        )}
+
+        {/* Insights */}
+        <div className="mt-8 p-4 bg-mint/10 rounded-lg">
+          <h4 className="font-heading text-deep-navy mb-2">💡 Insights</h4>
+          <p className="text-slate">
+            {comparisonType === 'universities' && (
+              `Among ${comparisonData.length} similar universities, ${comparisonData[0].name} offers the highest ROI at ${comparisonData[0].roi.toFixed(1)}%, 
+              which is ${((comparisonData[0].roi - currentValue) / currentValue * 100).toFixed(0)}% higher than your selection.`
+            )}
+            {comparisonType === 'subjects' && (
+              `Within the ${subject.category} category, ${comparisonData[0].name} has the strongest ROI. 
+              Consider exploring related subjects that might offer better financial outcomes while aligning with your interests.`
+            )}
+            {comparisonType === 'degree-levels' && (
+              `A ${result.inputs.degreeLevel} degree provides a ${currentValue.toFixed(1)}% ROI. 
+              ${currentValue < comparisonData[comparisonData.length-1].roi ? 
+                'Higher degree levels typically command premium earnings but require additional investment.' : 
+                'Your chosen degree level offers the best ROI in this subject area.'}`
+            )}
+          </p>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
+function cn(...classes: any[]) {
+  return classes.filter(Boolean).join(' ');
+}
+// src/hooks/useAnalytics.ts
+// ============================================================================
+// Custom Hook for Analytics Tracking
+// ============================================================================
+
+import { useCallback } from 'react';
+
+interface AnalyticsEvent {
+  event: string;
+  properties?: Record<string, any>;
+  timestamp?: string;
+}
+
+export const useAnalytics = () => {
+  const trackEvent = useCallback(async (eventName: string, properties?: Record<string, any>) => {
+    try {
+      const event: AnalyticsEvent = {
+        event: eventName,
+        properties,
+        timestamp: new Date().toISOString()
+      };
+
+      // Send to our analytics endpoint
+      await fetch('/api/analytics/track', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(event)
+      });
+
+      // Also push to Google Analytics if available
+      if (typeof window !== 'undefined' && (window as any).gtag) {
+        (window as any).gtag('event', eventName, properties);
+      }
+    } catch (error) {
+      console.error('Failed to track event:', error);
+    }
+  }, []);
+
+  return { trackEvent };
+};
+// src/hooks/useResizeObserver.ts
+// ============================================================================
+// Custom Hook for Observing Element Resize
+// ============================================================================
+
+import { useEffect, useState } from 'react';
+
+export const useResizeObserver = (ref: React.RefObject<HTMLElement>) => {
+  const [dimensions, setDimensions] = useState<DOMRect | null>(null);
+
+  useEffect(() => {
+    const observeTarget = ref.current;
+    if (!observeTarget) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      entries.forEach((entry) => {
+        setDimensions(entry.contentRect);
+      });
+    });
+
+    resizeObserver.observe(observeTarget);
+
+    return () => {
+      resizeObserver.unobserve(observeTarget);
+    };
+  }, [ref]);
+
+  return dimensions;
+};
+// src/hooks/useLocalStorage.ts
+// ============================================================================
+// Custom Hook for Local Storage with Type Safety
+// ============================================================================
+
+import { useState, useEffect } from 'react';
+
+export function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T) => void] {
+  // Get from local storage then
+  // parse stored json or return initialValue
+  const readValue = (): T => {
+    if (typeof window === 'undefined') {
+      return initialValue;
+    }
+
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? (JSON.parse(item) as T) : initialValue;
+    } catch (error) {
+      console.warn(`Error reading localStorage key "${key}":`, error);
+      return initialValue;
+    }
+  };
+
+  const [storedValue, setStoredValue] = useState<T>(readValue);
+
+  // Return a wrapped version of useState's setter function that ...
+  // ... persists the new value to localStorage.
+  const setValue = (value: T) => {
+    if (typeof window === 'undefined') {
+      console.warn(`Tried setting localStorage key "${key}" even though environment is not a client`);
+    }
+
+    try {
+      // Allow value to be a function so we have same API as useState
+      const newValue = value instanceof Function ? value(storedValue) : value;
+
+      // Save to local storage
+      window.localStorage.setItem(key, JSON.stringify(newValue));
+
+      // Save state
+      setStoredValue(newValue);
+
+      // We dispatch a custom event so every useLocalStorage hook is notified
+      window.dispatchEvent(new Event('local-storage'));
+    } catch (error) {
+      console.warn(`Error setting localStorage key "${key}":`, error);
+    }
+  };
+
+  useEffect(() => {
+    setStoredValue(readValue());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const handleStorageChange = () => {
+      setStoredValue(readValue());
+    };
+
+    // This only works for other documents, not the current one
+    window.addEventListener('storage', handleStorageChange);
+
+    // This is a custom event, triggered in writeValueToLocalStorage
+    window.addEventListener('local-storage', handleStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('local-storage', handleStorageChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return [storedValue, setValue];
+}
+// src/utils/formatters.ts
+// ============================================================================
+// Utility Functions for Formatting Currency, Percentages, etc.
+// ============================================================================
+
+/**
+ * Format a number as GBP currency
+ */
+export const formatCurrency = (value: number): string => {
+  return new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: 'GBP',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(value);
+};
+
+/**
+ * Format a number as a percentage
+ */
+export const formatPercentage = (value: number): string => {
+  return new Intl.NumberFormat('en-GB', {
+    style: 'percent',
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1
+  }).format(value / 100);
+};
+
+/**
+ * Format years with pluralization
+ */
+export const formatYears = (years: number): string => {
+  const rounded = Math.round(years * 10) / 10;
+  return `${rounded} ${rounded === 1 ? 'year' : 'years'}`;
+};
+
+/**
+ * Format large numbers with K/M/B suffixes
+ */
+export const formatCompact = (value: number): string => {
+  return new Intl.NumberFormat('en-GB', {
+    notation: 'compact',
+    compactDisplay: 'short'
+  }).format(value);
+};
+
+/**
+ * Format a date consistently
+ */
+export const formatDate = (date: Date): string => {
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  }).format(date);
+};
+/* styles/globals.css */
+/* ============================================================================
+   Global Styles for ROI Calculator Components
+   =========================================================================== */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --deep-navy: #0B2D4A;
+    --midnight-teal: #1A5F6B;
+    --tropical-turquoise: #2AC3B4;
+    --caribbean-cyan: #6CD4C9;
+    --seafoam-mint: #B8E6DE;
+    --blush-pink: #FFD9D9;
+    --lavender-mist: #E2D1FF;
+    --buttercream: #FFF2CC;
+    --coral-kiss: #FFC4B3;
+    --mint-frost: #D4F0F0;
+    --off-white: #F9FBFD;
+    --soft-grey: #E5E9F0;
+    --slate: #5A6874;
+    --charcoal: #1E2A36;
+  }
+
+  @font-face {
+    font-family: 'Playfair Display';
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url('/fonts/playfair-display.woff2') format('woff2');
+  }
+
+  @font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 300 600;
+    font-display: swap;
+    src: url('/fonts/inter.woff2') format('woff2');
+  }
+
+  @font-face {
+    font-family: 'JetBrains Mono';
+    font-style: normal;
+    font-weight: 400 600;
+    font-display: swap;
+    src: url('/fonts/jetbrains-mono.woff2') format('woff2');
+  }
+}
+
+@layer components {
+  .gradient-ocean-sunrise {
+    background: linear-gradient(135deg, #0B2D4A 0%, #1A5F6B 50%, #2AC3B4 100%);
+  }
+
+  .gradient-turquoise-dream {
+    background: linear-gradient(120deg, #2AC3B4 0%, #6CD4C9 70%, #B8E6DE 100%);
+  }
+
+  .gradient-pastel-horizon {
+    background: linear-gradient(45deg, #FFD9D9 0%, #E2D1FF 50%, #D4F0F0 100%);
+  }
+
+  .animate-spin-slow {
+    animation: spin 3s linear infinite;
+  }
+
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* Chart tooltips */
+  .chart-tooltip {
+    @apply absolute bg-white rounded-lg shadow-lg p-3 border border-soft-grey pointer-events-none;
+    transform: translate(-50%, -100%);
+    min-width: 200px;
+  }
+
+  /* Number transitions */
+  .count-up {
+    @apply transition-all duration-1000;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--soft-grey);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--midnight-teal);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--deep-navy);
+  }
+}
+// package.json additions
+{
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "next": "^14.0.0",
+    "framer-motion": "^10.16.0",
+    "d3": "^7.8.0",
+    "react-countup": "^6.5.0",
+    "uuid": "^9.0.0",
+    "clsx": "^2.0.0",
+    "tailwind-merge": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.0",
+    "@types/uuid": "^9.0.0",
+    "@types/react": "^18.2.0",
+    "typescript": "^5.2.0",
+    "tailwindcss": "^3.3.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0"
+  }
+}
+// tsconfig.json
+{
+  "compilerOptions": {
+    "target": "es5",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}

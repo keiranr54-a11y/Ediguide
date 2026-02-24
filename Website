@@ -15417,3 +15417,519 @@ export const logger = {
     "typescript": "^5.x"
   }
 }
+components/gallery/
+├── UniversityGallery.tsx
+├── GalleryGrid.tsx
+├── GalleryImage.tsx
+├── PinterestButton.tsx
+hooks/
+├── useGalleryImages.ts
+├── usePinterestUrl.ts
+types/
+├── university.ts
+utils/
+├── imagePlaceholder.ts
+styles/
+├── gallery.module.css
+__tests__/
+├── UniversityGallery.test.tsx
+__stories__/
+├── UniversityGallery.stories.tsx
+constants/
+├── universities.ts
+// types/university.ts
+
+/**
+ * Core university information used throughout the gallery.
+ */
+export interface University {
+  /** Unique slug for URLs (e.g. 'university-of-oxford') */
+  slug: string;
+  /** Display name (e.g. 'University of Oxford') */
+  name: string;
+  /** Optional region for refined Pinterest searches */
+  region?: 'england' | 'scotland' | 'wales' | 'northern-ireland';
+  /** Optional set of pre‑defined image IDs (Unsplash) */
+  imageIds?: string[];
+}
+
+/**
+ * Configuration for placeholder images.
+ */
+export interface ImagePlaceholderOptions {
+  /** Width of the image in pixels */
+  width: number;
+  /** Height of the image in pixels */
+  height: number;
+  /** Optional background color (hex) – defaults to a gradient from our palette */
+  bgColor?: string;
+  /** Optional text overlay */
+  text?: string;
+}
+// utils/imagePlaceholder.ts
+
+import { ImagePlaceholderOptions } from '../types/university';
+
+/**
+ * Generates a placeholder image URL using picsum.
+ * The image ID is deterministic based on the university slug,
+ * so the same university always gets the same placeholder set.
+ *
+ * @param seed - Unique string (e.g. university slug + index)
+ * @param options - Width, height, etc.
+ * @returns A URL to a placeholder image.
+ */
+export function getPlaceholderImageUrl(
+  seed: string,
+  options: ImagePlaceholderOptions
+): string {
+  const { width, height } = options;
+  // Use the seed to get a deterministic image from picsum
+  // (picsum allows any ID, but we use a hash to keep it stable)
+  const id = simpleHash(seed) % 1000; // picsum has ~1000 images
+  return `https://picsum.photos/id/${id}/${width}/${height}`;
+}
+
+/**
+ * Simple string hash function.
+ */
+function simpleHash(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0; // Convert to 32-bit integer
+  }
+  return Math.abs(hash);
+}
+
+/**
+ * Returns a gradient style string that matches our brand.
+ * Used as a fallback while images load or for pure CSS placeholders.
+ */
+export function getBrandGradient(seed: string): string {
+  // Cycle through our three signature gradients based on seed
+  const gradients = [
+    'linear-gradient(135deg, #0B2D4A 0%, #1A5F6B 50%, #2AC3B4 100%)', // Ocean Sunrise
+    'linear-gradient(120deg, #2AC3B4 0%, #6CD4C9 70%, #B8E6DE 100%)', // Turquoise Dream
+    'linear-gradient(45deg, #FFD9D9 0%, #E2D1FF 50%, #D4F0F0 100%)',  // Pastel Horizon
+  ];
+  const index = simpleHash(seed) % gradients.length;
+  return gradients[index];
+}
+// hooks/usePinterestUrl.ts
+
+import { useMemo } from 'react';
+import { University } from '../types/university';
+
+/**
+ * Builds a Pinterest search URL for a given university.
+ * Pattern: https://www.pinterest.com/search/pins/?q=UNIVERSITY_NAME%20university%20aesthetic
+ */
+export function usePinterestUrl(university: University): string {
+  return useMemo(() => {
+    const base = 'https://www.pinterest.com/search/pins/?q=';
+    // Add region modifier for better results
+    const regionModifier = university.region ? ` ${university.region}` : '';
+    const query = encodeURIComponent(
+      `${university.name} university aesthetic${regionModifier}`
+    );
+    return `${base}${query}`;
+  }, [university]);
+}
+// hooks/useGalleryImages.ts
+
+import { useMemo } from 'react';
+import { University } from '../types/university';
+import { getPlaceholderImageUrl, getBrandGradient } from '../utils/imagePlaceholder';
+
+export interface GalleryImage {
+  id: string;
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+  placeholderGradient: string;
+}
+
+/**
+ * Generates a set of gallery images for a university.
+ * Uses deterministic placeholders so the same university always gets the same images.
+ *
+ * @param university - The university object.
+ * @param count - Number of images to generate (default 6).
+ * @returns Array of GalleryImage objects.
+ */
+export function useGalleryImages(university: University, count = 6): GalleryImage[] {
+  return useMemo(() => {
+    const images: GalleryImage[] = [];
+    const baseSeed = university.slug;
+
+    for (let i = 0; i < count; i++) {
+      const seed = `${baseSeed}-${i}`;
+      images.push({
+        id: seed,
+        src: getPlaceholderImageUrl(seed, { width: 600, height: 400 }),
+        alt: `${university.name} campus aesthetic ${i + 1}`,
+        width: 600,
+        height: 400,
+        placeholderGradient: getBrandGradient(seed),
+      });
+    }
+    return images;
+  }, [university, count]);
+}
+// components/gallery/GalleryImage.tsx
+
+import React, { useState } from 'react';
+import { GalleryImage as ImageType } from '../../hooks/useGalleryImages';
+
+interface GalleryImageProps {
+  image: ImageType;
+  priority?: boolean;
+}
+
+export const GalleryImage: React.FC<GalleryImageProps> = ({
+  image,
+  priority = false,
+}) => {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  return (
+    <div
+      className="relative overflow-hidden rounded-xl bg-cover bg-center shadow-md transition-all duration-500 hover:shadow-xl group"
+      style={{
+        background: image.placeholderGradient,
+        aspectRatio: `${image.width} / ${image.height}`,
+      }}
+    >
+      {!error && (
+        <img
+          src={image.src}
+          alt={image.alt}
+          loading={priority ? 'eager' : 'lazy'}
+          onLoad={() => setIsLoaded(true)}
+          onError={() => setError(true)}
+          className={`
+            absolute inset-0 w-full h-full object-cover transition-opacity duration-700
+            ${isLoaded ? 'opacity-100' : 'opacity-0'}
+          `}
+        />
+      )}
+      {/* Overlay with subtle gradient on hover */}
+      <div className="absolute inset-0 bg-gradient-to-t from-deep-navy/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+    </div>
+  );
+};
+// components/gallery/GalleryGrid.tsx
+
+import React from 'react';
+import { GalleryImage } from './GalleryImage';
+import { GalleryImage as ImageType } from '../../hooks/useGalleryImages';
+
+interface GalleryGridProps {
+  images: ImageType[];
+}
+
+export const GalleryGrid: React.FC<GalleryGridProps> = ({ images }) => {
+  // The first image is largest (priority), the rest form a mosaic
+  const [first, ...rest] = images;
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 auto-rows-[200px]">
+      {/* First image spans 2x2 on medium screens */}
+      {first && (
+        <div className="md:col-span-2 md:row-span-2">
+          <GalleryImage image={first} priority />
+        </div>
+      )}
+
+      {/* Remaining images fill the grid */}
+      {rest.map((image, index) => (
+        <div
+          key={image.id}
+          className={`
+            ${index === 0 ? 'md:col-span-2' : ''}
+            ${index === 1 ? 'md:col-span-1' : ''}
+            ${index === 2 ? 'md:col-span-1' : ''}
+            ${index === 3 ? 'md:col-span-2' : ''}
+            ${index === 4 ? 'md:col-span-2 md:row-span-2' : ''}
+          `}
+        >
+          <GalleryImage image={image} />
+        </div>
+      ))}
+    </div>
+  );
+};
+// components/gallery/PinterestButton.tsx
+
+import React from 'react';
+import { University } from '../../types/university';
+
+interface PinterestButtonProps {
+  university: University;
+  className?: string;
+}
+
+export const PinterestButton: React.FC<PinterestButtonProps> = ({
+  university,
+  className = '',
+}) => {
+  const pinterestUrl = usePinterestUrl(university); // from our hook
+
+  const trackClick = () => {
+    // Analytics tracking (placeholder)
+    if (typeof window !== 'undefined' && (window as any).gtag) {
+      (window as any).gtag('event', 'pinterest_search', {
+        university: university.slug,
+      });
+    }
+  };
+
+  return (
+    <a
+      href={pinterestUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={trackClick}
+      className={`
+        inline-flex items-center gap-3 px-6 py-3 rounded-full
+        bg-gradient-to-r from-deep-navy to-midnight-teal
+        border-2 border-pinterest-red
+        text-white font-body font-medium
+        shadow-lg hover:shadow-xl
+        transform transition-all duration-300 hover:-translate-y-0.5
+        focus:outline-none focus:ring-4 focus:ring-tropical-turquoise/50
+        ${className}
+      `}
+    >
+      {/* Pinterest SVG icon */}
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" fill="#E60023" />
+        <path
+          d="M12 5C8.5 5 6 7.5 6 11c0 2.5 1.5 4.5 3.5 5.2 0-0.4 0-0.8 0.1-1.2 0.1-0.4 0.7-2.8 0.7-2.8s-0.2-0.4-0.2-1c0-1 0.6-1.7 1.3-1.7 0.6 0 0.9 0.4 0.9 1 0 0.6-0.4 1.5-0.6 2.3-0.2 0.7 0.3 1.3 1 1.3 1.2 0 2.1-1.3 2.1-3.2 0-1.7-1.2-2.9-3-2.9-2 0-3.2 1.5-3.2 3.1 0 0.6 0.2 1.2 0.6 1.6 0.1 0.1 0.1 0.2 0.1 0.3-0.1 0.3-0.2 0.9-0.2 1-0.1 0.2-0.2 0.3-0.4 0.2-1-0.5-1.6-1.8-1.6-3 0-2.4 1.8-4.7 5.1-4.7 2.7 0 4.8 1.9 4.8 4.5 0 2.7-1.7 4.8-4 4.8-0.8 0-1.5-0.4-1.8-0.9 0 0-0.4 1.6-0.5 2-0.2 0.7-0.6 1.4-1 2 1.1 0.3 2.2 0.5 3.3 0.5 3.5 0 6-2.5 6-6 0-3.5-2.5-6-6-6z"
+          fill="white"
+        />
+      </svg>
+      <span>Find more inspiration on Pinterest</span>
+      <span className="text-sm opacity-80">✨</span>
+    </a>
+  );
+};
+
+// Import the hook here to avoid circular deps
+import { usePinterestUrl } from '../../hooks/usePinterestUrl';
+// components/gallery/UniversityGallery.tsx
+
+import React from 'react';
+import { University } from '../../types/university';
+import { useGalleryImages } from '../../hooks/useGalleryImages';
+import { GalleryGrid } from './GalleryGrid';
+import { PinterestButton } from './PinterestButton';
+
+export interface UniversityGalleryProps {
+  /** University data */
+  university: University;
+  /** Number of images to display (default 6) */
+  imageCount?: number;
+  /** Optional additional CSS classes */
+  className?: string;
+}
+
+/**
+ * UniversityGallery – A serene, aesthetic image gallery for university profiles.
+ * Displays a mosaic of placeholder images and a prominent Pinterest button.
+ */
+export const UniversityGallery: React.FC<UniversityGalleryProps> = ({
+  university,
+  imageCount = 6,
+  className = '',
+}) => {
+  const images = useGalleryImages(university, imageCount);
+
+  return (
+    <section
+      className={`
+        bg-white/50 backdrop-blur-sm rounded-3xl p-6 md:p-8
+        border border-seafoam-mint/30 shadow-lg
+        ${className}
+      `}
+      aria-labelledby="gallery-heading"
+    >
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+        <h2
+          id="gallery-heading"
+          className="font-heading text-3xl md:text-4xl text-deep-navy"
+        >
+          {university.name} <span className="text-midnight-teal">aesthetic</span>
+        </h2>
+        <PinterestButton university={university} />
+      </header>
+
+      <GalleryGrid images={images} />
+
+      <p className="mt-4 text-sm text-slate text-center md:text-right">
+        Images are placeholders – click the Pinterest button to explore real student photos.
+      </p>
+    </section>
+  );
+};
+/* styles/gallery.module.css */
+
+/* Subtle animation for images on load */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.imageFadeIn {
+  animation: fadeIn 0.8s ease-out forwards;
+}
+
+/* Pinterest button hover effect – additional polish */
+.pinterestButtonGlow {
+  transition: box-shadow 0.3s ease;
+}
+
+.pinterestButtonGlow:hover {
+  box-shadow: 0 0 20px rgba(230, 0, 35, 0.4);
+}
+// constants/universities.ts
+
+import { University } from '../types/university';
+
+export const sampleUniversities: University[] = [
+  {
+    slug: 'university-of-oxford',
+    name: 'Oxford',
+    region: 'england',
+  },
+  {
+    slug: 'university-of-cambridge',
+    name: 'Cambridge',
+    region: 'england',
+  },
+  {
+    slug: 'university-of-st-andrews',
+    name: 'St Andrews',
+    region: 'scotland',
+  },
+  {
+    slug: 'cardiff-university',
+    name: 'Cardiff',
+    region: 'wales',
+  },
+  {
+    slug: 'queens-university-belfast',
+    name: "Queen's Belfast",
+    region: 'northern-ireland',
+  },
+];
+// __stories__/UniversityGallery.stories.tsx
+
+import type { Meta, StoryObj } from '@storybook/react';
+import { UniversityGallery } from '../components/gallery/UniversityGallery';
+import { sampleUniversities } from '../constants/universities';
+
+const meta: Meta<typeof UniversityGallery> = {
+  title: 'Profile/UniversityGallery',
+  component: UniversityGallery,
+  parameters: {
+    layout: 'fullscreen',
+    backgrounds: {
+      default: 'light',
+      values: [{ name: 'light', value: '#F9FBFD' }],
+    },
+  },
+  tags: ['autodocs'],
+};
+
+export default meta;
+type Story = StoryObj<typeof UniversityGallery>;
+
+export const Oxford: Story = {
+  args: {
+    university: sampleUniversities[0],
+    imageCount: 6,
+  },
+};
+
+export const StAndrews: Story = {
+  args: {
+    university: sampleUniversities[2],
+    imageCount: 8,
+  },
+};
+
+export const WithCustomClassName: Story = {
+  args: {
+    university: sampleUniversities[1],
+    className: 'max-w-7xl mx-auto',
+  },
+};
+// __tests__/UniversityGallery.test.tsx
+
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import { UniversityGallery } from '../components/gallery/UniversityGallery';
+import { sampleUniversities } from '../constants/universities';
+
+// Mock the image placeholder utility to avoid network calls
+jest.mock('../utils/imagePlaceholder', () => ({
+  getPlaceholderImageUrl: (seed: string) => `https://picsum.photos/600/400?random=${seed}`,
+  getBrandGradient: () => 'linear-gradient(135deg, #0B2D4A, #2AC3B4)',
+}));
+
+// Mock the Pinterest URL hook
+jest.mock('../hooks/usePinterestUrl', () => ({
+  usePinterestUrl: () => 'https://pinterest.com/search?q=test',
+}));
+
+describe('UniversityGallery', () => {
+  const university = sampleUniversities[0];
+
+  it('renders the university name in the heading', () => {
+    render(<UniversityGallery university={university} />);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/Oxford/i);
+  });
+
+  it('renders the Pinterest button with correct link', () => {
+    render(<UniversityGallery university={university} />);
+    const pinterestLink = screen.getByRole('link', { name: /pinterest/i });
+    expect(pinterestLink).toHaveAttribute('href', 'https://pinterest.com/search?q=test');
+    expect(pinterestLink).toHaveAttribute('target', '_blank');
+  });
+
+  it('displays the correct number of images (default 6)', () => {
+    render(<UniversityGallery university={university} />);
+    const images = screen.getAllByRole('img');
+    expect(images).toHaveLength(6);
+  });
+
+  it('displays custom image count', () => {
+    render(<UniversityGallery university={university} imageCount={4} />);
+    const images = screen.getAllByRole('img');
+    expect(images).toHaveLength(4);
+  });
+
+  it('applies additional className', () => {
+    const { container } = render(
+      <UniversityGallery university={university} className="test-class" />
+    );
+    expect(container.firstChild).toHaveClass('test-class');
+  });
+
+  it('handles missing region gracefully', () => {
+    const uniWithoutRegion = { ...university, region: undefined };
+    render(<UniversityGallery university={uniWithoutRegion} />);
+    expect(screen.getByRole('heading')).toBeInTheDocument();
+  });
+});

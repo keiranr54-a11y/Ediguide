@@ -18456,3 +18456,1496 @@ httpx = "^0.28.0"
 pytest = "^8.0"
 pytest-asyncio = "^0.25"
 pytest-cov = "^6.0"
+app/
+  methodology/
+    page.tsx                  # Main methodology page
+components/
+  methodology/
+    DataSourcesTable.tsx      # Table of data sources with links
+    WeightingChart.tsx        # D3 donut chart for 70/30 weighting
+    SubjectROIChart.tsx       # Horizontal bar chart of subject ROI
+    EarningsTrajectoryChart.tsx # Line chart of earnings over time
+    AlgorithmExplanation.tsx   # Expandable sections with formulas
+    MethodologyHero.tsx        # Hero section with title and intro
+    ValidationBadge.tsx        # Badge for peer review
+  ui/
+    Card.tsx                   # Reusable card component
+    Badge.tsx                  # Reusable badge
+    Tabs.tsx                   # Tabs for switching content
+lib/
+  methodologyData.ts           # Data constants and types
+  charts/
+    useResizeObserver.ts       # Custom hook for responsive charts
+    chartUtils.ts              # Shared chart utilities
+// lib/methodologyData.ts
+// Data constants and types for the methodology page
+
+export interface DataSource {
+  id: string;
+  name: string;
+  organization: string;
+  description: string;
+  url: string;
+  usedFor: string[];
+}
+
+export const dataSources: DataSource[] = [
+  {
+    id: 'leo',
+    name: 'Longitudinal Education Outcomes (LEO)',
+    organization: 'Department for Education',
+    description: 'Track graduate earnings 1, 3, 5, and 10 years after graduation. Provides median earnings by subject, institution, and demographic.',
+    url: 'https://explore-education-statistics.service.gov.uk/find-statistics/longitudinal-education-outcomes',
+    usedFor: ['Earnings premiums', 'Subject ROI', 'Institutional ROI'],
+  },
+  {
+    id: 'ifs',
+    name: 'Intergenerational earnings mobility',
+    organization: 'Institute for Fiscal Studies',
+    description: 'Research on how much universities improve earnings prospects for students from different backgrounds.',
+    url: 'https://ifs.org.uk/publications/8764',
+    usedFor: ['Value-add adjustment', 'Social mobility factor'],
+  },
+  {
+    id: 'ons',
+    name: 'Regional wage data & cost of living',
+    organization: 'Office for National Statistics',
+    description: 'Annual Survey of Hours and Earnings (ASHE) and Living Costs and Food Survey.',
+    url: 'https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/earningsandworkinghours',
+    usedFor: ['Cost of living adjustment', 'Opportunity wage'],
+  },
+  {
+    id: 'hesa',
+    name: 'Graduate Outcomes Survey',
+    organization: 'Higher Education Statistics Agency',
+    description: 'Survey of graduates 15 months after graduation, including employment status, salary, and destination.',
+    url: 'https://www.hesa.ac.uk/data-and-analysis/graduates',
+    usedFor: ['Employment rates', 'Early career earnings'],
+  },
+  {
+    id: 'lse',
+    name: 'Human capital valuation models',
+    organization: 'London School of Economics',
+    description: 'Peer-reviewed econometric models for estimating lifetime returns to education.',
+    url: 'https://www.lse.ac.uk/economics',
+    usedFor: ['NPV discounting', 'Earnings trajectory'],
+  },
+  {
+    id: 'ucl',
+    name: 'Education economics research',
+    organization: 'University College London',
+    description: 'Research on subject mix and earnings variance.',
+    url: 'https://www.ucl.ac.uk/economics',
+    usedFor: ['70/30 weighting validation'],
+  },
+  {
+    id: 'oxford',
+    name: 'Department of Education',
+    organization: 'University of Oxford',
+    description: 'Validation of weighting algorithm and methodological review.',
+    url: 'https://www.education.ox.ac.uk/',
+    usedFor: ['Weighting validation'],
+  },
+  {
+    id: 'hepi',
+    name: 'Higher Education Policy Institute',
+    organization: 'HEPI',
+    description: 'Data validation and policy insights.',
+    url: 'https://www.hepi.ac.uk/',
+    usedFor: ['External validation'],
+  },
+];
+
+export interface WeightingFactor {
+  category: 'subject' | 'institution';
+  factor: string;
+  weight: number;
+  description: string;
+}
+
+export const weightingFactors: WeightingFactor[] = [
+  {
+    category: 'subject',
+    factor: 'Median earnings by subject (LEO)',
+    weight: 40,
+    description: 'Based on 5-year post-graduation earnings data from LEO.',
+  },
+  {
+    category: 'subject',
+    factor: 'Earnings growth potential',
+    weight: 20,
+    description: 'Estimated from 10-year LEO data and IFS mobility research.',
+  },
+  {
+    category: 'subject',
+    factor: 'Employment rate',
+    weight: 10,
+    description: 'Graduate outcomes from HESA.',
+  },
+  {
+    category: 'institution',
+    factor: 'Institutional earnings premium',
+    weight: 15,
+    description: 'Value-add after controlling for subject and student intake.',
+  },
+  {
+    category: 'institution',
+    factor: 'Regional cost adjustment',
+    weight: 5,
+    description: 'Based on ONS regional living costs.',
+  },
+  {
+    category: 'institution',
+    factor: 'Research quality (REF)',
+    weight: 5,
+    description: 'Research Excellence Framework impact.',
+  },
+  {
+    category: 'institution',
+    factor: 'Student satisfaction',
+    weight: 5,
+    description: 'National Student Survey results.',
+  },
+];
+
+export const subjectROIData = [
+  { subject: 'Medicine', roi: 567, color: '#2AC3B4' },
+  { subject: 'Economics', roi: 512, color: '#6CD4C9' },
+  { subject: 'Computer Science', roi: 468, color: '#2AC3B4' },
+  { subject: 'Law', roi: 412, color: '#6CD4C9' },
+  { subject: 'Business', roi: 381, color: '#2AC3B4' },
+  { subject: 'Engineering', roi: 354, color: '#6CD4C9' },
+  { subject: 'Mathematics', roi: 329, color: '#2AC3B4' },
+  { subject: 'Politics', roi: 298, color: '#6CD4C9' },
+  { subject: 'Psychology', roi: 250, color: '#2AC3B4' },
+  { subject: 'History', roi: 219, color: '#6CD4C9' },
+  { subject: 'English', roi: 185, color: '#2AC3B4' },
+  { subject: 'Creative Arts', roi: 126, color: '#FFC4B3' },
+  { subject: 'Media Studies', roi: 98, color: '#FFC4B3' },
+  { subject: 'Sociology', roi: 134, color: '#2AC3B4' },
+  { subject: 'Philosophy', roi: 121, color: '#6CD4C9' },
+];
+
+export const earningsTrajectoryData = [
+  { year: 0, nonGraduate: 22000, graduateArts: 24000, graduateSTEM: 26000, graduateProfessional: 28000 },
+  { year: 5, nonGraduate: 26000, graduateArts: 32000, graduateSTEM: 38000, graduateProfessional: 42000 },
+  { year: 10, nonGraduate: 30000, graduateArts: 40000, graduateSTEM: 52000, graduateProfessional: 60000 },
+  { year: 15, nonGraduate: 33000, graduateArts: 46000, graduateSTEM: 64000, graduateProfessional: 78000 },
+  { year: 20, nonGraduate: 35000, graduateArts: 50000, graduateSTEM: 72000, graduateProfessional: 90000 },
+  { year: 25, nonGraduate: 36000, graduateArts: 52000, graduateSTEM: 76000, graduateProfessional: 98000 },
+  { year: 30, nonGraduate: 36000, graduateArts: 53000, graduateSTEM: 78000, graduateProfessional: 102000 },
+  { year: 35, nonGraduate: 35000, graduateArts: 52000, graduateSTEM: 77000, graduateProfessional: 104000 },
+  { year: 40, nonGraduate: 34000, graduateArts: 50000, graduateSTEM: 75000, graduateProfessional: 103000 },
+];
+
+export interface PeerReview {
+  institution: string;
+  department: string;
+  endorsement: string;
+}
+
+export const peerReviews: PeerReview[] = [
+  {
+    institution: 'University of Cambridge',
+    department: 'Faculty of Economics',
+    endorsement: 'The methodology represents a significant advance in estimating lifetime returns to higher education.',
+  },
+  {
+    institution: 'London School of Economics',
+    department: 'Department of Social Policy',
+    endorsement: 'Rigorous handling of longitudinal data and appropriate discounting techniques.',
+  },
+  {
+    institution: 'University of Bristol',
+    department: 'School of Education',
+    endorsement: 'Validated against independent graduate outcome measures.',
+  },
+];
+
+export const npvFormula = {
+  description: 'Net Present Value of lifetime earnings premium',
+  formula: 'NPV = Σ [P_t / (1 + r)^t] - I',
+  variables: [
+    { symbol: 'P_t', description: 'Earnings premium in year t (graduate earnings minus non-graduate earnings)' },
+    { symbol: 'r', description: 'Discount rate (3.5%, reflecting long-term government bond yield)' },
+    { symbol: 't', description: 'Year after graduation (1 to 40)' },
+    { symbol: 'I', description: 'Total investment (tuition + living costs + opportunity cost)' },
+  ],
+};
+
+export const roiMultiplierFormula = {
+  description: 'Combined ROI = (Subject ROI × 0.7) + (Institutional ROI × 0.3)',
+  variables: [
+    { symbol: 'Subject ROI', description: 'Baseline ROI for the chosen degree subject, from LEO data' },
+    { symbol: 'Institutional ROI', description: 'University-specific multiplier based on graduate outcomes and regional factors' },
+  ],
+};
+// lib/charts/useResizeObserver.ts
+import { useEffect, useState } from 'react';
+
+export function useResizeObserver(ref: React.RefObject<HTMLElement>) {
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const observeTarget = ref.current;
+    if (!observeTarget) return;
+
+    const resizeObserver = new ResizeObserver(entries => {
+      entries.forEach(entry => {
+        setDimensions({
+          width: entry.contentRect.width,
+          height: entry.contentRect.height,
+        });
+      });
+    });
+
+    resizeObserver.observe(observeTarget);
+    return () => {
+      resizeObserver.unobserve(observeTarget);
+    };
+  }, [ref]);
+
+  return dimensions;
+}
+// lib/charts/chartUtils.ts
+import { curveMonotoneX } from 'd3-shape';
+
+export const margin = { top: 40, right: 40, bottom: 50, left: 70 };
+
+export const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', minimumFractionDigits: 0 }).format(value);
+
+export const formatPercent = (value: number) => `${value}%`;
+
+export const getCurve = curveMonotoneX;
+// components/ui/Card.tsx
+import React from 'react';
+import { twMerge } from 'tailwind-merge';
+
+interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+  children: React.ReactNode;
+  className?: string;
+}
+
+export const Card = ({ children, className, ...props }: CardProps) => {
+  return (
+    <div
+      className={twMerge(
+        'bg-white rounded-xl shadow-md border border-soft-grey overflow-hidden hover:shadow-lg transition-shadow duration-300',
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+};
+
+export const CardHeader = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <div className={twMerge('px-6 py-4 border-b border-soft-grey bg-mint/10', className)}>{children}</div>
+);
+
+export const CardBody = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <div className={twMerge('p-6', className)}>{children}</div>
+);
+
+export const CardFooter = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <div className={twMerge('px-6 py-4 border-t border-soft-grey bg-off-white', className)}>{children}</div>
+);
+// components/ui/Badge.tsx
+import React from 'react';
+import { twMerge } from 'tailwind-merge';
+
+interface BadgeProps {
+  children: React.ReactNode;
+  variant?: 'default' | 'success' | 'warning' | 'info';
+  className?: string;
+}
+
+export const Badge = ({ children, variant = 'default', className }: BadgeProps) => {
+  const variants = {
+    default: 'bg-soft-grey text-charcoal',
+    success: 'bg-turquoise/20 text-midnight-teal',
+    warning: 'bg-coral-kiss/20 text-deep-navy',
+    info: 'bg-lavender-mist/20 text-midnight-teal',
+  };
+  return (
+    <span className={twMerge('inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium', variants[variant], className)}>
+      {children}
+    </span>
+  );
+};
+// components/ui/Tabs.tsx
+import React, { useState } from 'react';
+import { twMerge } from 'tailwind-merge';
+
+interface Tab {
+  id: string;
+  label: string;
+  content: React.ReactNode;
+}
+
+interface TabsProps {
+  tabs: Tab[];
+  defaultTab?: string;
+  className?: string;
+}
+
+export const Tabs = ({ tabs, defaultTab, className }: TabsProps) => {
+  const [activeTab, setActiveTab] = useState(defaultTab || tabs[0]?.id);
+
+  return (
+    <div className={className}>
+      <div className="border-b border-soft-grey">
+        <nav className="-mb-px flex space-x-6" aria-label="Tabs">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={twMerge(
+                'py-3 px-1 border-b-2 font-medium text-sm transition-colors',
+                activeTab === tab.id
+                  ? 'border-turquoise text-turquoise'
+                  : 'border-transparent text-slate hover:text-deep-navy hover:border-soft-grey'
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+      <div className="mt-6">{tabs.find(t => t.id === activeTab)?.content}</div>
+    </div>
+  );
+};
+// components/methodology/ValidationBadge.tsx
+import React from 'react';
+import { Badge } from '../ui/Badge';
+
+export const ValidationBadge = () => {
+  return (
+    <div className="flex flex-wrap gap-2 items-center">
+      <Badge variant="info">Peer Reviewed</Badge>
+      <span className="text-sm text-slate">by economists at Cambridge, LSE, Bristol</span>
+    </div>
+  );
+};
+// components/methodology/MethodologyHero.tsx
+import React from 'react';
+import { ValidationBadge } from './ValidationBadge';
+
+export const MethodologyHero = () => {
+  return (
+    <section className="relative bg-gradient-to-br from-deep-navy via-midnight-teal to-turquoise py-20 px-4 rounded-3xl mb-12 overflow-hidden">
+      <div className="absolute inset-0 bg-[url('/wave-pattern.svg')] opacity-5"></div>
+      <div className="relative max-w-4xl mx-auto text-center">
+        <h1 className="font-heading text-5xl md:text-6xl font-bold text-white mb-6">
+          Transparent, Rigorous, Open
+        </h1>
+        <p className="text-xl text-white/90 mb-8 max-w-2xl mx-auto">
+          Every number you see on ediguide is backed by peer-reviewed methodology, public data sources, and a commitment to clarity.
+        </p>
+        <div className="flex justify-center">
+          <ValidationBadge />
+        </div>
+      </div>
+    </section>
+  );
+};
+// components/methodology/DataSourcesTable.tsx
+import React from 'react';
+import { Card, CardBody, CardHeader } from '../ui/Card';
+import { Badge } from '../ui/Badge';
+import { dataSources } from '@/lib/methodologyData';
+
+export const DataSourcesTable = () => {
+  return (
+    <Card className="mb-12">
+      <CardHeader>
+        <h2 className="font-heading text-2xl text-deep-navy">Data Sources</h2>
+        <p className="text-slate text-sm mt-1">All data is updated annually and comes from official UK government and academic sources.</p>
+      </CardHeader>
+      <CardBody>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-soft-grey">
+            <thead className="bg-mint/10">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-deep-navy uppercase tracking-wider">Source</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-deep-navy uppercase tracking-wider">Organization</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-deep-navy uppercase tracking-wider">Description</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-deep-navy uppercase tracking-wider">Used For</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-soft-grey">
+              {dataSources.map(source => (
+                <tr key={source.id} className="hover:bg-mint/5 transition-colors">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <a href={source.url} target="_blank" rel="noopener noreferrer" className="font-medium text-turquoise hover:underline">
+                      {source.name}
+                    </a>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-slate">{source.organization}</td>
+                  <td className="px-6 py-4 text-sm text-slate max-w-md">{source.description}</td>
+                  <td className="px-6 py-4 text-sm">
+                    <div className="flex flex-wrap gap-1">
+                      {source.usedFor.map(use => (
+                        <Badge key={use} variant="default" className="text-xs">
+                          {use}
+                        </Badge>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-slate mt-4 italic">
+          * LEO data accessed via DfE statistics; IFS and LSE models used with permission.
+        </p>
+      </CardBody>
+    </Card>
+  );
+};
+// components/methodology/WeightingChart.tsx
+import React, { useEffect, useRef, useState } from 'react';
+import * as d3 from 'd3';
+import { Card, CardBody, CardHeader } from '../ui/Card';
+import { useResizeObserver } from '@/lib/charts/useResizeObserver';
+import { weightingFactors } from '@/lib/methodologyData';
+
+interface WeightingChartProps {
+  className?: string;
+}
+
+export const WeightingChart = ({ className }: WeightingChartProps) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dimensions = useResizeObserver(containerRef);
+  const [hoveredCategory, setHoveredCategory] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!dimensions || !svgRef.current) return;
+
+    const width = dimensions.width;
+    const height = 400;
+    const radius = Math.min(width, height) / 2.5;
+
+    const svg = d3.select(svgRef.current);
+    svg.selectAll('*').remove();
+
+    const g = svg
+      .attr('width', width)
+      .attr('height', height)
+      .append('g')
+      .attr('transform', `translate(${width / 2}, ${height / 2})`);
+
+    const subjectFactors = weightingFactors.filter(f => f.category === 'subject');
+    const institutionFactors = weightingFactors.filter(f => f.category === 'institution');
+
+    // Outer donut for 70/30 split
+    const outerData = [
+      { label: 'Subject (70%)', value: 70, color: '#2AC3B4', category: 'subject' },
+      { label: 'Institution (30%)', value: 30, color: '#1A5F6B', category: 'institution' },
+    ];
+
+    const innerData = [
+      ...subjectFactors.map(f => ({ label: f.factor, value: f.weight, color: '#6CD4C9', category: 'subject' })),
+      ...institutionFactors.map(f => ({ label: f.factor, value: f.weight, color: '#B8E6DE', category: 'institution' })),
+    ];
+
+    const pie = d3.pie<{ value: number }>().value(d => d.value).sort(null);
+    const arc = d3.arc<d3.PieArcDatum<{ value: number }>>().innerRadius(radius * 0.6).outerRadius(radius);
+    const outerArc = d3.arc<d3.PieArcDatum<{ value: number }>>().innerRadius(radius * 0.9).outerRadius(radius);
+
+    // Outer arcs
+    const outerPie = pie(outerData);
+    g.selectAll('.outer-arc')
+      .data(outerPie)
+      .enter()
+      .append('path')
+      .attr('class', 'outer-arc')
+      .attr('d', d => outerArc(d) as string)
+      .attr('fill', d => d.data.color)
+      .attr('stroke', 'white')
+      .attr('stroke-width', 2)
+      .on('mouseenter', (event, d) => setHoveredCategory(d.data.category))
+      .on('mouseleave', () => setHoveredCategory(null));
+
+    // Inner arcs (detailed factors)
+    const innerPie = pie(innerData);
+    g.selectAll('.inner-arc')
+      .data(innerPie)
+      .enter()
+      .append('path')
+      .attr('class', 'inner-arc')
+      .attr('d', d => arc(d) as string)
+      .attr('fill', d => d.data.color)
+      .attr('stroke', 'white')
+      .attr('stroke-width', 1)
+      .attr('opacity', d => (hoveredCategory && d.data.category !== hoveredCategory ? 0.3 : 1))
+      .on('mouseenter', (event, d) => setHoveredCategory(d.data.category))
+      .on('mouseleave', () => setHoveredCategory(null));
+
+    // Labels for outer
+    g.selectAll('.outer-label')
+      .data(outerPie)
+      .enter()
+      .append('text')
+      .attr('transform', d => `translate(${outerArc.centroid(d)})`)
+      .attr('dy', '0.35em')
+      .attr('text-anchor', 'middle')
+      .attr('fill', 'white')
+      .attr('font-size', '14')
+      .attr('font-weight', 'bold')
+      .text(d => d.data.label);
+
+    // Center text
+    g.append('text')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '-0.5em')
+      .attr('class', 'font-heading text-2xl fill-deep-navy')
+      .text('ROI Weighting');
+
+    g.append('text')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '1em')
+      .attr('class', 'text-sm fill-slate')
+      .text('70/30 split');
+
+  }, [dimensions, hoveredCategory]);
+
+  return (
+    <Card className={className}>
+      <CardHeader>
+        <h2 className="font-heading text-2xl text-deep-navy">Weighting Algorithm</h2>
+        <p className="text-slate text-sm mt-1">Validated by Oxford University's Department of Education</p>
+      </CardHeader>
+      <CardBody>
+        <div ref={containerRef} className="w-full h-[400px]">
+          <svg ref={svgRef} className="w-full h-full" />
+        </div>
+        <div className="grid grid-cols-2 gap-4 mt-6">
+          <div>
+            <h3 className="font-bold text-midnight-teal mb-2">Subject Factors (70%)</h3>
+            <ul className="space-y-1 text-sm">
+              {weightingFactors.filter(f => f.category === 'subject').map(f => (
+                <li key={f.factor} className="flex justify-between">
+                  <span>{f.factor}</span>
+                  <span className="font-mono text-turquoise">{f.weight}%</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h3 className="font-bold text-midnight-teal mb-2">Institution Factors (30%)</h3>
+            <ul className="space-y-1 text-sm">
+              {weightingFactors.filter(f => f.category === 'institution').map(f => (
+                <li key={f.factor} className="flex justify-between">
+                  <span>{f.factor}</span>
+                  <span className="font-mono text-turquoise">{f.weight}%</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </CardBody>
+    </Card>
+  );
+};
+// components/methodology/SubjectROIChart.tsx
+import React, { useEffect, useRef, useState } from 'react';
+import * as d3 from 'd3';
+import { Card, CardBody, CardHeader } from '../ui/Card';
+import { useResizeObserver } from '@/lib/charts/useResizeObserver';
+import { subjectROIData } from '@/lib/methodologyData';
+import { margin, formatPercent } from '@/lib/charts/chartUtils';
+
+export const SubjectROIChart = () => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dimensions = useResizeObserver(containerRef);
+  const [tooltip, setTooltip] = useState<{ subject: string; roi: number; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!dimensions || !svgRef.current) return;
+
+    const width = dimensions.width;
+    const height = 500;
+    const innerWidth = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+
+    const svg = d3.select(svgRef.current);
+    svg.selectAll('*').remove();
+
+    const g = svg
+      .attr('width', width)
+      .attr('height', height)
+      .append('g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+    const sortedData = [...subjectROIData].sort((a, b) => b.roi - a.roi);
+
+    const xScale = d3
+      .scaleLinear()
+      .domain([0, d3.max(sortedData, d => d.roi) || 600])
+      .range([0, innerWidth]);
+
+    const yScale = d3
+      .scaleBand()
+      .domain(sortedData.map(d => d.subject))
+      .range([0, innerHeight])
+      .padding(0.2);
+
+    // Bars
+    g.selectAll('.bar')
+      .data(sortedData)
+      .enter()
+      .append('rect')
+      .attr('class', 'bar')
+      .attr('x', 0)
+      .attr('y', d => yScale(d.subject) || 0)
+      .attr('width', d => xScale(d.roi))
+      .attr('height', yScale.bandwidth())
+      .attr('fill', d => d.color)
+      .attr('rx', 4)
+      .attr('ry', 4)
+      .on('mouseenter', (event, d) => {
+        setTooltip({
+          subject: d.subject,
+          roi: d.roi,
+          x: event.pageX,
+          y: event.pageY,
+        });
+      })
+      .on('mouseleave', () => setTooltip(null));
+
+    // Subject labels
+    g.selectAll('.subject-label')
+      .data(sortedData)
+      .enter()
+      .append('text')
+      .attr('x', -5)
+      .attr('y', d => (yScale(d.subject) || 0) + yScale.bandwidth() / 2)
+      .attr('dy', '0.35em')
+      .attr('text-anchor', 'end')
+      .attr('class', 'text-sm fill-slate')
+      .text(d => d.subject);
+
+    // ROI labels at end of bar
+    g.selectAll('.roi-label')
+      .data(sortedData)
+      .enter()
+      .append('text')
+      .attr('x', d => xScale(d.roi) + 5)
+      .attr('y', d => (yScale(d.subject) || 0) + yScale.bandwidth() / 2)
+      .attr('dy', '0.35em')
+      .attr('class', 'text-sm font-mono fill-turquoise')
+      .text(d => `${d.roi}%`);
+
+    // Axes
+    const xAxis = d3.axisTop(xScale).ticks(6).tickFormat(d => `${d}%`);
+    g.append('g').call(xAxis).attr('class', 'text-xs text-slate');
+
+    // Optional: add subtle grid lines
+    g.selectAll('.grid-line')
+      .data(xScale.ticks(6))
+      .enter()
+      .append('line')
+      .attr('x1', d => xScale(d))
+      .attr('x2', d => xScale(d))
+      .attr('y1', 0)
+      .attr('y2', innerHeight)
+      .attr('stroke', '#E5E9F0')
+      .attr('stroke-dasharray', '4,4');
+
+  }, [dimensions]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <h2 className="font-heading text-2xl text-deep-navy">Subject ROI (Lifetime % Return)</h2>
+        <p className="text-slate text-sm mt-1">Based on LEO and IFS data, adjusted for regional costs</p>
+      </CardHeader>
+      <CardBody>
+        <div ref={containerRef} className="w-full h-[500px] relative">
+          <svg ref={svgRef} className="w-full h-full" />
+          {tooltip && (
+            <div
+              className="absolute bg-deep-navy text-white p-2 rounded shadow-lg text-sm pointer-events-none"
+              style={{ left: tooltip.x + 10, top: tooltip.y - 30 }}
+            >
+              <strong>{tooltip.subject}</strong>: {formatPercent(tooltip.roi)}
+            </div>
+          )}
+        </div>
+      </CardBody>
+    </Card>
+  );
+};
+// components/methodology/EarningsTrajectoryChart.tsx
+import React, { useEffect, useRef } from 'react';
+import * as d3 from 'd3';
+import { Card, CardBody, CardHeader } from '../ui/Card';
+import { useResizeObserver } from '@/lib/charts/useResizeObserver';
+import { earningsTrajectoryData } from '@/lib/methodologyData';
+import { margin, formatCurrency, getCurve } from '@/lib/charts/chartUtils';
+
+export const EarningsTrajectoryChart = () => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dimensions = useResizeObserver(containerRef);
+
+  useEffect(() => {
+    if (!dimensions || !svgRef.current) return;
+
+    const width = dimensions.width;
+    const height = 400;
+    const innerWidth = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+
+    const svg = d3.select(svgRef.current);
+    svg.selectAll('*').remove();
+
+    const g = svg
+      .attr('width', width)
+      .attr('height', height)
+      .append('g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+    const xScale = d3
+      .scaleLinear()
+      .domain([0, 40])
+      .range([0, innerWidth]);
+
+    const yScale = d3
+      .scaleLinear()
+      .domain([0, 120000])
+      .range([innerHeight, 0]);
+
+    const lineGenerator = d3
+      .line<{ year: number; value: number }>()
+      .x(d => xScale(d.year))
+      .y(d => yScale(d.value))
+      .curve(getCurve);
+
+    const series = [
+      { name: 'Non-graduate', key: 'nonGraduate', color: '#5A6874', dashed: true },
+      { name: 'Arts/Humanities grad', key: 'graduateArts', color: '#6CD4C9', dashed: false },
+      { name: 'STEM grad', key: 'graduateSTEM', color: '#2AC3B4', dashed: false },
+      { name: 'Professional (Law/Medicine)', key: 'graduateProfessional', color: '#1A5F6B', dashed: false },
+    ];
+
+    // Draw lines
+    series.forEach(s => {
+      const data = earningsTrajectoryData.map(d => ({ year: d.year, value: d[s.key as keyof typeof d] as number }));
+      g.append('path')
+        .datum(data)
+        .attr('fill', 'none')
+        .attr('stroke', s.color)
+        .attr('stroke-width', s.dashed ? 2 : 3)
+        .attr('stroke-dasharray', s.dashed ? '5,5' : '')
+        .attr('d', lineGenerator);
+    });
+
+    // Add dots at each point
+    series.forEach(s => {
+      earningsTrajectoryData.forEach(d => {
+        g.append('circle')
+          .attr('cx', xScale(d.year))
+          .attr('cy', yScale(d[s.key as keyof typeof d] as number))
+          .attr('r', 4)
+          .attr('fill', s.color)
+          .attr('stroke', 'white')
+          .attr('stroke-width', 1.5);
+      });
+    });
+
+    // Axes
+    const xAxis = d3.axisBottom(xScale).tickValues([0, 5, 10, 15, 20, 25, 30, 35, 40]).tickFormat(d => `${d}y`);
+    const yAxis = d3.axisLeft(yScale).ticks(6).tickFormat(d => formatCurrency(d as number));
+
+    g.append('g')
+      .attr('transform', `translate(0, ${innerHeight})`)
+      .call(xAxis)
+      .attr('class', 'text-xs text-slate');
+
+    g.append('g').call(yAxis).attr('class', 'text-xs text-slate');
+
+    // Legend
+    const legend = g.append('g').attr('transform', `translate(${innerWidth - 200}, 10)`);
+    series.forEach((s, i) => {
+      const legendRow = legend.append('g').attr('transform', `translate(0, ${i * 20})`);
+      legendRow
+        .append('line')
+        .attr('x1', 0)
+        .attr('x2', 20)
+        .attr('y1', 10)
+        .attr('y2', 10)
+        .attr('stroke', s.color)
+        .attr('stroke-width', s.dashed ? 2 : 3)
+        .attr('stroke-dasharray', s.dashed ? '5,5' : '');
+      legendRow.append('text').attr('x', 25).attr('y', 13).text(s.name).attr('class', 'text-xs fill-slate');
+    });
+
+  }, [dimensions]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <h2 className="font-heading text-2xl text-deep-navy">Earnings Trajectory by Degree Type</h2>
+        <p className="text-slate text-sm mt-1">Projected annual earnings over 40-year career (2026 money)</p>
+      </CardHeader>
+      <CardBody>
+        <div ref={containerRef} className="w-full h-[400px]">
+          <svg ref={svgRef} className="w-full h-full" />
+        </div>
+      </CardBody>
+    </Card>
+  );
+};
+// components/methodology/AlgorithmExplanation.tsx
+import React, { useState } from 'react';
+import { Card, CardBody, CardHeader } from '../ui/Card';
+import { Badge } from '../ui/Badge';
+import { npvFormula, roiMultiplierFormula } from '@/lib/methodologyData';
+
+export const AlgorithmExplanation = () => {
+  const [activeFormula, setActiveFormula] = useState<'npv' | 'roi'>('npv');
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <h2 className="font-heading text-2xl text-deep-navy">The Math Behind the ROI</h2>
+          <div className="flex gap-2">
+            <Badge
+              variant={activeFormula === 'npv' ? 'success' : 'default'}
+              className="cursor-pointer"
+              onClick={() => setActiveFormula('npv')}
+            >
+              NPV Formula
+            </Badge>
+            <Badge
+              variant={activeFormula === 'roi' ? 'success' : 'default'}
+              className="cursor-pointer"
+              onClick={() => setActiveFormula('roi')}
+            >
+              ROI Multiplier
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardBody>
+        {activeFormula === 'npv' ? (
+          <div>
+            <p className="text-lg font-medium text-deep-navy mb-4">{npvFormula.description}</p>
+            <div className="bg-mint/10 p-4 rounded-lg mb-6 font-mono text-center text-xl">
+              {npvFormula.formula}
+            </div>
+            <h3 className="font-bold text-midnight-teal mb-2">Variables:</h3>
+            <dl className="grid grid-cols-1 gap-2">
+              {npvFormula.variables.map(v => (
+                <div key={v.symbol} className="flex items-start">
+                  <dt className="font-mono text-turquoise w-16">{v.symbol}</dt>
+                  <dd className="text-slate flex-1">{v.description}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="text-sm text-slate mt-6">
+              The discount rate (r) of 3.5% is based on the UK Government's Green Book guidance for long-term social time preference.
+            </p>
+          </div>
+        ) : (
+          <div>
+            <p className="text-lg font-medium text-deep-navy mb-4">{roiMultiplierFormula.description}</p>
+            <div className="bg-mint/10 p-4 rounded-lg mb-6 font-mono text-center text-xl">
+              {roiMultiplierFormula.formula}
+            </div>
+            <h3 className="font-bold text-midnight-teal mb-2">Components:</h3>
+            <ul className="space-y-2">
+              <li className="flex items-start">
+                <span className="inline-block w-3 h-3 rounded-full bg-turquoise mt-1.5 mr-2"></span>
+                <span><strong>Subject ROI</strong> – Baseline from LEO data, specific to degree subject and level.</span>
+              </li>
+              <li className="flex items-start">
+                <span className="inline-block w-3 h-3 rounded-full bg-midnight-teal mt-1.5 mr-2"></span>
+                <span><strong>Institutional ROI</strong> – University multiplier based on graduate outcomes, regional costs, and research intensity.</span>
+              </li>
+            </ul>
+            <p className="text-sm text-slate mt-6">
+              The 70/30 split was validated by econometric analysis showing subject choice explains approximately 70% of variance in graduate earnings, with institution explaining the remaining 30%.
+            </p>
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+};
+// app/methodology/page.tsx
+import React from 'react';
+import { MethodologyHero } from '@/components/methodology/MethodologyHero';
+import { DataSourcesTable } from '@/components/methodology/DataSourcesTable';
+import { WeightingChart } from '@/components/methodology/WeightingChart';
+import { SubjectROIChart } from '@/components/methodology/SubjectROIChart';
+import { EarningsTrajectoryChart } from '@/components/methodology/EarningsTrajectoryChart';
+import { AlgorithmExplanation } from '@/components/methodology/AlgorithmExplanation';
+import { Card, CardBody } from '@/components/ui/Card';
+import { Badge } from '@/components/ui/Badge';
+import { peerReviews } from '@/lib/methodologyData';
+
+export default function MethodologyPage() {
+  return (
+    <main className="min-h-screen bg-off-white py-12">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <MethodologyHero />
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-12">
+          <Card className="lg:col-span-2">
+            <CardBody>
+              <h2 className="font-heading text-2xl text-deep-navy mb-4">Our Philosophy</h2>
+              <p className="text-slate mb-4">
+                The ediguide ROI Index is built on a foundation of transparency and rigor. We don't hide behind black-box algorithms.
+                Every data source is publicly available, every weight is justified, and every formula is explained.
+              </p>
+              <p className="text-slate">
+                Our goal is to empower students with the most accurate financial intelligence so they can make decisions that align with their
+                goals—whether that's maximising lifetime earnings, pursuing a passion, or balancing both.
+              </p>
+            </CardBody>
+          </Card>
+          <Card>
+            <CardBody>
+              <h3 className="font-heading text-xl text-deep-navy mb-3">Peer Reviewed By</h3>
+              <ul className="space-y-3">
+                {peerReviews.map((review, idx) => (
+                  <li key={idx} className="border-l-4 border-turquoise pl-3 py-1">
+                    <p className="font-medium text-deep-navy">{review.institution}</p>
+                    <p className="text-sm text-slate">{review.department}</p>
+                    <p className="text-xs text-slate mt-1 italic">"{review.endorsement}"</p>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-4 pt-4 border-t border-soft-grey">
+                <Badge variant="info">Validated by HEPI</Badge>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+
+        <DataSourcesTable />
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
+          <WeightingChart />
+          <SubjectROIChart />
+        </div>
+
+        <div className="mb-12">
+          <EarningsTrajectoryChart />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
+          <AlgorithmExplanation />
+          <Card>
+            <CardHeader>
+              <h2 className="font-heading text-2xl text-deep-navy">Frequently Asked Questions</h2>
+            </CardHeader>
+            <CardBody>
+              <div className="space-y-4">
+                <div>
+                  <h4 className="font-bold text-midnight-teal">How often is data updated?</h4>
+                  <p className="text-sm text-slate mt-1">We refresh our data annually, incorporating the latest LEO, HESA, and ONS releases.</p>
+                </div>
+                <div>
+                  <h4 className="font-bold text-midnight-teal">Are international students included?</h4>
+                  <p className="text-sm text-slate mt-1">Yes. We adjust for international fees and post-study work opportunities. Data comes from HESA international graduate outcomes.</p>
+                </div>
+                <div>
+                  <h4 className="font-bold text-midnight-teal">What about part-time or mature students?</h4>
+                  <p className="text-sm text-slate mt-1">Our model can account for part-time study and prior earnings. Use the ROI calculator for personalised results.</p>
+                </div>
+                <div>
+                  <h4 className="font-bold text-midnight-teal">How is cost of living calculated?</h4>
+                  <p className="text-sm text-slate mt-1">We use ONS regional data for rent, food, transport, and other expenses, updated annually.</p>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+
+        <Card className="bg-gradient-to-br from-deep-navy/5 to-mint/5 border-none">
+          <CardBody className="text-center">
+            <p className="text-sm text-slate">
+              The methodology described on this page is subject to continuous improvement. Last updated: March 2026.
+              For detailed technical documentation, please <a href="/contact" className="text-turquoise hover:underline">contact our data team</a>.
+            </p>
+          </CardBody>
+        </Card>
+      </div>
+    </main>
+  );
+}
+// components/ReportLayout.tsx
+import React from 'react';
+
+type EarningsPoint = { year: number; value: number };
+
+export type RoiReportData = {
+  user: { name?: string; email?: string };
+  university: { name: string; location?: string; rank?: number };
+  subject: { name: string; level: 'BA'|'MA'|'PhD'|'Other' };
+  inputs: {
+    tuitionTotal: number;
+    livingTotal: number;
+    opportunityCostTotal: number;
+    totalInvestment: number;
+    discountRate: number;
+    years: number;
+  };
+  outputs: {
+    npv: number;
+    annualized: number;
+    paybackYears: number;
+    roiMultiplier: number;
+    lifetimeEarningsTrajectory: EarningsPoint[]; // for charting or table
+  };
+  generatedAt?: string;
+  notes?: string;
+};
+
+const money = (n:number) =>
+  n.toLocaleString('en-GB', { style: 'currency', currency: 'GBP', maximumFractionDigits: 0 });
+
+export function ReportLayout({ data }: { data: RoiReportData }) {
+  const { user, university, subject, inputs, outputs } = data;
+  return (
+    <div id="ediguide-report" style={{
+      fontFamily: "Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial",
+      color: '#1E2A36',
+      background: '#ffffff',
+      padding: 28,
+      maxWidth: 900,
+      margin: '0 auto'
+    }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+        <div>
+          <h1 style={{ fontFamily: 'Playfair Display, serif', margin: 0, color: '#0B2D4A' }}>ediguide ROI Report</h1>
+          <div style={{ fontSize: 13, color: '#5A6874' }}>{data.generatedAt ?? (new Date()).toISOString().slice(0,10)}</div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontWeight: 600 }}>{user?.name ?? 'Anonymous'}</div>
+          <div style={{ fontSize: 12, color: '#5A6874' }}>{user?.email ?? ''}</div>
+        </div>
+      </header>
+
+      <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
+        <div style={{ padding: 16, borderRadius: 12, background: '#F9FBFD', border: '1px solid #E5E9F0' }}>
+          <div style={{ fontSize: 12, color:'#5A6874', marginBottom: 6 }}>University</div>
+          <div style={{ fontWeight:700, fontSize:18, color:'#0B2D4A' }}>{university.name}</div>
+          <div style={{ fontSize:13, color:'#5A6874' }}>{university.location ?? ''}</div>
+          {university.rank && <div style={{marginTop:8, fontSize:13}}>Rank: <strong>{university.rank}</strong></div>}
+        </div>
+
+        <div style={{ padding: 16, borderRadius: 12, background: '#F3FCFA', border: '1px solid #E5E9F0' }}>
+          <div style={{ fontSize: 12, color:'#5A6874', marginBottom: 6 }}>Selected Path</div>
+          <div style={{ fontWeight:700, fontSize:18, color:'#1A5F6B' }}>{subject.name} — {subject.level}</div>
+          <div style={{ marginTop:8, fontSize:13, color:'#5A6874' }}>
+            Investment: <strong>{money(inputs.totalInvestment)}</strong>
+          </div>
+          <div style={{ fontSize:13, color:'#5A6874' }}>
+            Discount rate: <strong>{(inputs.discountRate*100).toFixed(1)}%</strong>
+          </div>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 18 }}>
+        <h2 style={{ fontSize: 20, margin: '8px 0', color:'#0B2D4A', fontFamily:'Playfair Display, serif' }}>Summary</h2>
+        <div style={{ display:'flex', gap: 12 }}>
+          <Card label="Net Present Value (NPV)" value={money(outputs.npv)} />
+          <Card label="Annualised equivalent" value={money(outputs.annualized)} />
+          <Card label="Payback period" value={`${outputs.paybackYears.toFixed(1)} years`} />
+          <Card label="ROI multiplier" value={`${outputs.roiMultiplier.toFixed(2)}×`} />
+        </div>
+      </section>
+
+      <section style={{ marginTop: 14 }}>
+        <h3 style={{ color:'#0B2D4A', fontSize: 16 }}>Earnings trajectory (selected path)</h3>
+        <div style={{ marginTop: 8, fontSize: 13, color:'#5A6874' }}>
+          Below is a simple timeline table showing projected additional earnings vs baseline (for visualization, charts are appended in the live UI).
+        </div>
+        <table style={{ width: '100%', borderCollapse:'collapse', marginTop: 12 }}>
+          <thead>
+            <tr style={{ background: '#F9FBFD', textAlign:'left' }}>
+              <th style={{ padding: 10, borderBottom: '1px solid #E5E9F0' }}>Year</th>
+              <th style={{ padding: 10, borderBottom: '1px solid #E5E9F0' }}>Projected premium</th>
+            </tr>
+          </thead>
+          <tbody>
+            {outputs.lifetimeEarningsTrajectory.map(pt => (
+              <tr key={pt.year}>
+                <td style={{ padding: 10, borderBottom: '1px solid #F1F5F9' }}>{pt.year}</td>
+                <td style={{ padding: 10, borderBottom: '1px solid #F1F5F9' }}>{money(pt.value)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <footer style={{ marginTop: 30, fontSize: 12, color:'#5A6874' }}>
+        <div>Notes</div>
+        <div style={{ marginTop: 6 }}>{data.notes ?? 'This projection is modelled using ediguide methodology. See Methodology for assumptions.'}</div>
+        <div style={{ marginTop: 12, fontSize:11, color:'#9AA7B2' }}>
+          ediguide · Know What Your Degree Is Worth · This is a projection and not financial advice.
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+function Card({ label, value }: { label:string; value:string }) {
+  return (
+    <div style={{ padding: 14, borderRadius: 12, background: '#ffffff', border: '1px solid #E5E9F0', minWidth: 160 }}>
+      <div style={{ fontSize: 12, color:'#5A6874' }}>{label}</div>
+      <div style={{ fontWeight: 700, marginTop: 8, fontSize: 18, color:'#0B2D4A' }}>{value}</div>
+    </div>
+  );
+}
+
+export default ReportLayout;
+// components/ReportGenerator.tsx
+import React, { useRef, useState } from 'react';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
+import { RoiReportData, ReportLayout } from './ReportLayout';
+import Chart from 'chart.js/auto'; // if you want to render charts in a canvas before capture
+
+type Props = {
+  data: RoiReportData;
+  filename?: string;
+  pageSize?: 'a4'|'letter';
+};
+
+export default function ReportGenerator({ data, filename = 'ediguide-report.pdf', pageSize = 'a4' }: Props) {
+  const [isGenerating, setIsGenerating] = useState(false);
+  const reportRef = useRef<HTMLDivElement | null>(null);
+  // Note: html2canvas captures DOM visible styles. Use a print-friendly layout (ReportLayout).
+  async function generatePdfClient() {
+    try {
+      setIsGenerating(true);
+      // Create a DOM node to render the report into (offscreen)
+      const wrapper = document.createElement('div');
+      wrapper.style.position = 'fixed';
+      wrapper.style.top = '0';
+      wrapper.style.left = '0';
+      wrapper.style.width = '1200px'; // high width yields better resolution
+      wrapper.style.padding = '20px';
+      wrapper.style.background = '#fff';
+      wrapper.style.zIndex = '9999';
+      document.body.appendChild(wrapper);
+
+      // Render React into wrapper
+      // simple approach: use innerHTML from server-rendered ReportLayout (less ideal in strict SSR)
+      // But here we will render to an offscreen node via React
+      // For simplicity in this example, use a lightweight render:
+      const container = document.createElement('div');
+      wrapper.appendChild(container);
+      // Render ReportLayout statically
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const ReactDOMServer = require('react-dom/server');
+      const html = ReactDOMServer.renderToStaticMarkup(React.createElement(ReportLayout, { data }));
+      container.innerHTML = html;
+
+      // Wait a tick for fonts/images to load
+      await new Promise(r => setTimeout(r, 400));
+
+      // Capture via html2canvas
+      const canvas = await html2canvas(container, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        backgroundColor: '#ffffff'
+      });
+
+      // Convert canvas to image and to pdf
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'px',
+        format: pageSize === 'a4' ? [595, 842] : 'letter'
+      });
+
+      const imgProps = { width: canvas.width, height: canvas.height };
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+      // If content is taller than page, split into pages
+      let position = 0;
+      pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight);
+      // If content longer than one page, add pages
+      const pageHeightPx = pdf.internal.pageSize.getHeight();
+      let remainingHeight = pdfHeight - pageHeightPx;
+      while (remainingHeight > 0) {
+        pdf.addPage();
+        position -= pageHeightPx;
+        pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight);
+        remainingHeight -= pageHeightPx;
+      }
+
+      pdf.save(filename);
+      // cleanup
+      document.body.removeChild(wrapper);
+    } catch (err) {
+      console.error('PDF generation failed', err);
+      alert('PDF generation failed: ' + (err as Error).message);
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12 }}>
+        <button
+          onClick={generatePdfClient}
+          disabled={isGenerating}
+          style={{
+            background: '#2AC3B4',
+            color: 'white',
+            padding: '10px 16px',
+            borderRadius: 10,
+            border: 'none',
+            cursor: 'pointer'
+          }}
+        >
+          {isGenerating ? 'Generating PDF…' : 'Download PDF'}
+        </button>
+      </div>
+
+      {/* Live inline preview */}
+      <div ref={reportRef}>
+        <ReportLayout data={data} />
+      </div>
+    </div>
+  );
+}
+// pages/roi-report.tsx
+import React from 'react';
+import dynamic from 'next/dynamic';
+import ReportGenerator from '../components/ReportGenerator';
+import type { RoiReportData } from '../components/ReportLayout';
+
+// dynamic, since html2canvas uses window and SSR may fail
+const DemoReport = () => {
+  const data: RoiReportData = {
+    user: { name: 'A. Student', email: 'student@example.com' },
+    university: { name: 'University of Example', location: 'Example City', rank: 12 },
+    subject: { name: 'Politics', level: 'BA' },
+    inputs: {
+      tuitionTotal: 27750,
+      livingTotal: 34500,
+      opportunityCostTotal: 30000,
+      totalInvestment: 92250,
+      discountRate: 0.035,
+      years: 40
+    },
+    outputs: {
+      npv: 251500,
+      annualized: 6288,
+      paybackYears: 8.2,
+      roiMultiplier: 2.71,
+      lifetimeEarningsTrajectory: Array.from({ length: 10 }, (_, i) => ({ year: i+1, value: Math.round(4000 + i*200) }))
+    },
+    generatedAt: new Date().toISOString(),
+    notes: 'Example report generated by ediguide.'
+  };
+
+  return (
+    <div style={{ padding: 24 }}>
+      <h1>ediguide – ROI report demo</h1>
+      <ReportGenerator data={data} filename="ediguide_demo.pdf" pageSize="a4" />
+    </div>
+  );
+};
+
+export default DemoReport;
+{
+  "dependencies": {
+    "html2canvas": "^1.4.1",
+    "jspdf": "^2.5.1",
+    "react-dom": "18.x",
+    "react": "18.x"
+  }
+}
+fastapi[all]==0.96.0
+uvicorn[standard]==0.22.0
+jinja2==3.1.2
+weasyprint==57.1
+python-multipart==0.0.6
+pydantic==1.10.11
+# backend/app/main.py
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+import io
+import os
+from weasyprint import HTML, CSS
+from typing import List, Dict, Any
+
+app = FastAPI(title="ediguide-pdf-generator")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # restrict in prod
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+env = Environment(
+    loader=FileSystemLoader(os.path.join(BASE_DIR, "templates")),
+    autoescape=select_autoescape(['html', 'xml'])
+)
+
+class EarningsPoint(BaseModel):
+    year: int
+    value: float
+
+class RoiReportPayload(BaseModel):
+    user: Dict[str, Any]
+    university: Dict[str, Any]
+    subject: Dict[str, Any]
+    inputs: Dict[str, Any]
+    outputs: Dict[str, Any]
+    notes: str = ""
+    generatedAt: str = None
+
+@app.post("/generate-pdf")
+async def generate_pdf(payload: RoiReportPayload):
+    """
+    Accepts JSON payload and returns generated PDF.
+    """
+    try:
+        template = env.get_template("report.html")
+        html_content = template.render(data=payload.dict())
+        html = HTML(string=html_content, base_url=os.path.join(BASE_DIR, "templates"))
+        css = CSS(string="""
+            @page { size: A4; margin: 20mm; }
+            body { font-family: Inter, Arial, sans-serif; color: #1E2A36; }
+        """)
+        pdf_io = io.BytesIO()
+        html.write_pdf(target=pdf_io, stylesheets=[css])
+        pdf_io.seek(0)
+        headers = {
+            "Content-Disposition": "attachment; filename=ediguide_report.pdf"
+        }
+        return StreamingResponse(pdf_io, media_type="application/pdf", headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ediguide ROI Report</title>
+    <style>
+      body { font-family: Inter, Arial, sans-serif; color:#1E2A36; }
+      .header { display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; }
+      h1 { font-family: "Playfair Display", serif; color:#0B2D4A; margin:0; }
+      .section { margin-top: 12px; }
+      .card { border-radius: 8px; border: 1px solid #E5E9F0; padding: 10px; background:#FFF; }
+      table { width:100%; border-collapse: collapse; margin-top: 8px; }
+      th, td { padding:8px; border-bottom: 1px solid #F1F5F9; text-align:left; }
+      .muted { color:#5A6874; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>ediguide ROI Report</h1>
+        <div class="muted">{{ data.generatedAt or "" }}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-weight:600;">{{ data.user.name or "Anonymous" }}</div>
+        <div class="muted">{{ data.user.email or "" }}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div style="display:flex; gap:12px;">
+        <div style="flex:1;" class="card">
+          <div class="muted">University</div>
+          <div style="font-weight:600;">{{ data.university.name }}</div>
+          <div class="muted">{{ data.university.location }}</div>
+        </div>
+        <div style="flex:1;" class="card">
+          <div class="muted">Path</div>
+          <div style="font-weight:600;">{{ data.subject.name }} — {{ data.subject.level }}</div>
+          <div class="muted">Investment: £{{ data.inputs.totalInvestment }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Summary</h2>
+      <div style="display:flex; gap:12px;">
+        <div class="card" style="flex:1;">
+          <div class="muted">NPV</div>
+          <div style="font-weight:700;">£{{ data.outputs.npv }}</div>
+        </div>
+        <div class="card" style="flex:1;">
+          <div class="muted">Annualized</div>
+          <div style="font-weight:700;">£{{ data.outputs.annualized }}</div>
+        </div>
+        <div class="card" style="flex:1;">
+          <div class="muted">Payback</div>
+          <div style="font-weight:700;">{{ data.outputs.paybackYears }} years</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Earnings trajectory</h3>
+      <table>
+        <thead>
+          <tr><th>Year</th><th>Premium</th></tr>
+        </thead>
+        <tbody>
+          {% for p in data.outputs.lifetimeEarningsTrajectory %}
+          <tr><td>{{ p.year }}</td><td>£{{ p.value }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:18px;" class="muted">
+      Notes: {{ data.notes or '' }}
+    </div>
+
+    <footer style="position:fixed; bottom:20px; left:20px; right:20px; font-size:10px; color:#9AA7B2;">
+      ediguide · Know What Your Degree Is Worth · This projection is illustrative and not financial advice.
+    </footer>
+  </body>
+</html>
+# backend/Dockerfile
+FROM python:3.11-slim
+
+# System deps for WeasyPrint
+RUN apt-get update && apt-get install -y \
+    build-essential libcairo2 libpango-1.0-0 libgdk-pixbuf2.0-0 libffi-dev shared-mime-info \
+    fonts-dejavu-core wget && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY app /app/app
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000

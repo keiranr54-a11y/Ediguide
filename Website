@@ -21305,3 +21305,1159 @@ export default function LeadModal({
 export { default as LeadModal } from "./components/LeadModal";
 export { default as LeadButton } from "./components/LeadButton";
 export { useLeadModal } from "./hooks/useLeadModal";
+components/
+  LeadForm/
+    LeadFormModal.tsx
+    LeadForm.tsx
+    LeadFormButton.tsx
+    index.ts
+hooks/
+  useLeadForm.ts
+types/
+  lead.types.ts
+lib/
+  api/
+    leads.ts
+  analytics.ts
+  validation.ts
+__tests__/
+  LeadForm.test.tsx
+stories/
+  LeadForm.stories.tsx
+// types/lead.types.ts
+
+export interface LeadFormData {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  country: string;
+  consent: boolean;
+  // Hidden fields, set by context
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: 'bachelor' | 'master' | 'phd' | '';
+  campaignId?: string;
+}
+
+export interface LeadSubmissionResponse {
+  success: boolean;
+  leadId?: string;
+  error?: string;
+}
+
+export interface Campaign {
+  id: string;
+  name: string;
+  description?: string;
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: string;
+  cpaAmount?: number;
+}
+// lib/validation.ts
+import { z } from 'zod';
+
+export const leadFormSchema = z.object({
+  firstName: z.string().min(2, 'First name must be at least 2 characters'),
+  lastName: z.string().min(2, 'Last name must be at least 2 characters'),
+  email: z.string().email('Please enter a valid email address'),
+  phone: z
+    .string()
+    .optional()
+    .refine(
+      (val) => !val || /^[+]?[(]?[0-9]{1,4}[)]?[-\s./0-9]*$/.test(val),
+      'Please enter a valid phone number'
+    ),
+  country: z.string().min(2, 'Please select your country'),
+  consent: z.literal(true, {
+    errorMap: () => ({ message: 'You must agree to share your information' }),
+  }),
+  universitySlug: z.string().optional(),
+  subjectSlug: z.string().optional(),
+  degreeLevel: z.enum(['bachelor', 'master', 'phd', '']).optional(),
+  campaignId: z.string().optional(),
+});
+
+export type LeadFormSchema = z.infer<typeof leadFormSchema>;
+// lib/analytics.ts
+
+type EventProperties = Record<string, any>;
+
+export const trackEvent = async (
+  eventName: string,
+  properties: EventProperties
+) => {
+  try {
+    await fetch('/api/analytics/track', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: eventName,
+        properties,
+        timestamp: new Date().toISOString(),
+        session_id: getSessionId(),
+        user_id: getUserId(),
+      }),
+    });
+  } catch (error) {
+    console.error('Analytics error:', error);
+  }
+
+  // Also push to Google Analytics if available
+  if (typeof window !== 'undefined' && (window as any).gtag) {
+    (window as any).gtag('event', eventName, properties);
+  }
+};
+
+export const trackLeadClick = (campaignId: string, universitySlug?: string) =>
+  trackEvent('lead_click', { campaign_id: campaignId, university_slug: universitySlug });
+
+export const trackLeadSubmit = (
+  campaignId: string,
+  leadId: string,
+  universitySlug?: string
+) =>
+  trackEvent('lead_submit', {
+    campaign_id: campaignId,
+    lead_id: leadId,
+    university_slug: universitySlug,
+  });
+
+// helpers
+function getSessionId(): string {
+  if (typeof window === 'undefined') return '';
+  let sid = sessionStorage.getItem('ediguide_sid');
+  if (!sid) {
+    sid = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
+    sessionStorage.setItem('ediguide_sid', sid);
+  }
+  return sid;
+}
+
+function getUserId(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return localStorage.getItem('userId') || undefined;
+}
+// lib/api/leads.ts
+import { LeadFormData, LeadSubmissionResponse } from '@/types/lead.types';
+
+export async function submitLead(
+  data: LeadFormData
+): Promise<LeadSubmissionResponse> {
+  try {
+    const response = await fetch('/api/leads/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return { success: false, error: error.message || 'Submission failed' };
+    }
+
+    const result = await response.json();
+    return { success: true, leadId: result.lead_id };
+  } catch (error) {
+    return { success: false, error: 'Network error. Please try again.' };
+  }
+}
+
+export async function trackClick(campaignId: string) {
+  try {
+    await fetch(`/api/leads/track/${campaignId}`, { method: 'GET' });
+  } catch (error) {
+    // fail silently
+  }
+}
+// hooks/useLeadForm.ts
+import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { leadFormSchema, LeadFormSchema } from '@/lib/validation';
+import { submitLead, trackClick } from '@/lib/api/leads';
+import { trackLeadSubmit } from '@/lib/analytics';
+import { LeadFormData, Campaign } from '@/types/lead.types';
+
+interface UseLeadFormProps {
+  campaign: Campaign;
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: string;
+  onSuccess?: () => void;
+  onError?: (error: string) => void;
+}
+
+export function useLeadForm({
+  campaign,
+  universitySlug,
+  subjectSlug,
+  degreeLevel,
+  onSuccess,
+  onError,
+}: UseLeadFormProps) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+
+  const form = useForm<LeadFormSchema>({
+    resolver: zodResolver(leadFormSchema),
+    defaultValues: {
+      firstName: '',
+      lastName: '',
+      email: '',
+      phone: '',
+      country: '',
+      consent: false,
+    },
+  });
+
+  const handleSubmit = async (values: LeadFormSchema) => {
+    setIsSubmitting(true);
+
+    // Build full lead data
+    const leadData: LeadFormData = {
+      ...values,
+      campaignId: campaign.id,
+      universitySlug: universitySlug || campaign.universitySlug,
+      subjectSlug: subjectSlug || campaign.subjectSlug,
+      degreeLevel: degreeLevel || campaign.degreeLevel || '',
+    };
+
+    const response = await submitLead(leadData);
+
+    if (response.success && response.leadId) {
+      setSubmitSuccess(true);
+      trackLeadSubmit(campaign.id, response.leadId, leadData.universitySlug);
+      form.reset();
+      onSuccess?.();
+    } else {
+      const errorMsg = response.error || 'Something went wrong.';
+      form.setError('root', { message: errorMsg });
+      onError?.(errorMsg);
+    }
+
+    setIsSubmitting(false);
+  };
+
+  const handleTrigger = async () => {
+    await trackClick(campaign.id);
+    // open modal handled by parent
+  };
+
+  return {
+    form,
+    isSubmitting,
+    submitSuccess,
+    handleSubmit: form.handleSubmit(handleSubmit),
+    handleTrigger,
+  };
+}
+// components/LeadForm/LeadForm.tsx
+'use client';
+
+import React from 'react';
+import { UseFormReturn } from 'react-hook-form';
+import { LeadFormSchema } from '@/lib/validation';
+
+interface LeadFormProps {
+  form: UseFormReturn<LeadFormSchema>;
+  isSubmitting: boolean;
+  onSubmit: (e: React.FormEvent) => void;
+  universityName?: string;
+}
+
+const COUNTRIES = [
+  'United Kingdom',
+  'United States',
+  'Canada',
+  'Australia',
+  'Germany',
+  'France',
+  'India',
+  'China',
+  'Other',
+];
+
+export const LeadForm: React.FC<LeadFormProps> = ({
+  form,
+  isSubmitting,
+  onSubmit,
+  universityName,
+}) => {
+  const {
+    register,
+    formState: { errors },
+  } = form;
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-5" noValidate>
+      {universityName && (
+        <div className="bg-mint/10 p-3 rounded-lg text-sm text-navy">
+          🏫 You're requesting info about <strong>{universityName}</strong>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor="firstName" className="block text-sm font-medium text-slate mb-1">
+            First name *
+          </label>
+          <input
+            id="firstName"
+            type="text"
+            className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-turquoise focus:border-transparent transition ${
+              errors.firstName ? 'border-coral' : 'border-soft-grey'
+            }`}
+            {...register('firstName')}
+            disabled={isSubmitting}
+          />
+          {errors.firstName && (
+            <p className="mt-1 text-xs text-coral">{errors.firstName.message}</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="lastName" className="block text-sm font-medium text-slate mb-1">
+            Last name *
+          </label>
+          <input
+            id="lastName"
+            type="text"
+            className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-turquoise focus:border-transparent transition ${
+              errors.lastName ? 'border-coral' : 'border-soft-grey'
+            }`}
+            {...register('lastName')}
+            disabled={isSubmitting}
+          />
+          {errors.lastName && (
+            <p className="mt-1 text-xs text-coral">{errors.lastName.message}</p>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <label htmlFor="email" className="block text-sm font-medium text-slate mb-1">
+          Email address *
+        </label>
+        <input
+          id="email"
+          type="email"
+          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-turquoise focus:border-transparent transition ${
+            errors.email ? 'border-coral' : 'border-soft-grey'
+          }`}
+          {...register('email')}
+          disabled={isSubmitting}
+        />
+        {errors.email && (
+          <p className="mt-1 text-xs text-coral">{errors.email.message}</p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="phone" className="block text-sm font-medium text-slate mb-1">
+          Phone number (optional)
+        </label>
+        <input
+          id="phone"
+          type="tel"
+          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-turquoise focus:border-transparent transition ${
+            errors.phone ? 'border-coral' : 'border-soft-grey'
+          }`}
+          {...register('phone')}
+          disabled={isSubmitting}
+        />
+        {errors.phone && (
+          <p className="mt-1 text-xs text-coral">{errors.phone.message}</p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="country" className="block text-sm font-medium text-slate mb-1">
+          Country of residence *
+        </label>
+        <select
+          id="country"
+          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-turquoise focus:border-transparent transition ${
+            errors.country ? 'border-coral' : 'border-soft-grey'
+          }`}
+          {...register('country')}
+          disabled={isSubmitting}
+        >
+          <option value="">Select a country</option>
+          {COUNTRIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        {errors.country && (
+          <p className="mt-1 text-xs text-coral">{errors.country.message}</p>
+        )}
+      </div>
+
+      <div className="flex items-start">
+        <div className="flex items-center h-5">
+          <input
+            id="consent"
+            type="checkbox"
+            className="w-4 h-4 text-turquoise border-soft-grey rounded focus:ring-turquoise"
+            {...register('consent')}
+            disabled={isSubmitting}
+          />
+        </div>
+        <label htmlFor="consent" className="ml-2 text-sm text-slate">
+          I agree to ediguide sharing my information with the university to receive a prospectus
+          and related information. See our{' '}
+          <a href="/privacy" className="text-turquoise hover:underline">
+            Privacy Policy
+          </a>
+          .
+        </label>
+      </div>
+      {errors.consent && (
+        <p className="text-xs text-coral -mt-2">{errors.consent.message}</p>
+      )}
+
+      {errors.root && (
+        <div className="bg-coral/10 border border-coral text-coral px-4 py-2 rounded-lg text-sm">
+          {errors.root.message}
+        </div>
+      )}
+
+      <button
+        type="submit"
+        disabled={isSubmitting}
+        className="w-full bg-turquoise hover:bg-turquoise/90 text-white font-medium py-3 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+      >
+        {isSubmitting ? (
+          <>
+            <svg
+              className="animate-spin -ml-1 mr-2 h-5 w-5 text-white"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              ></circle>
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              ></path>
+            </svg>
+            Submitting...
+          </>
+        ) : (
+          'Request Free Prospectus'
+        )}
+      </button>
+
+      <p className="text-xs text-slate text-center">
+        By submitting you agree to our{' '}
+        <a href="/terms" className="text-turquoise hover:underline">
+          Terms
+        </a>{' '}
+        and{' '}
+        <a href="/privacy" className="text-turquoise hover:underline">
+          Privacy Policy
+        </a>
+        .
+      </p>
+    </form>
+  );
+};
+// components/LeadForm/LeadFormModal.tsx
+'use client';
+
+import React, { Fragment, useEffect } from 'react';
+import { Dialog, Transition } from '@headlessui/react';
+import { XMarkIcon } from '@heroicons/react/24/outline';
+import { LeadForm } from './LeadForm';
+import { useLeadForm } from '@/hooks/useLeadForm';
+import { Campaign } from '@/types/lead.types';
+
+interface LeadFormModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  campaign: Campaign;
+  universityName?: string;
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: string;
+  onSuccess?: () => void;
+}
+
+export const LeadFormModal: React.FC<LeadFormModalProps> = ({
+  isOpen,
+  onClose,
+  campaign,
+  universityName,
+  universitySlug,
+  subjectSlug,
+  degreeLevel,
+  onSuccess,
+}) => {
+  const { form, isSubmitting, submitSuccess, handleSubmit, handleTrigger } = useLeadForm({
+    campaign,
+    universitySlug,
+    subjectSlug,
+    degreeLevel,
+    onSuccess: () => {
+      onSuccess?.();
+      // Optionally auto close after success
+      setTimeout(() => onClose(), 3000);
+    },
+  });
+
+  // Track when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      handleTrigger();
+    }
+  }, [isOpen, handleTrigger]);
+
+  return (
+    <Transition appear show={isOpen} as={Fragment}>
+      <Dialog as="div" className="relative z-50" onClose={onClose}>
+        <Transition.Child
+          as={Fragment}
+          enter="ease-out duration-300"
+          enterFrom="opacity-0"
+          enterTo="opacity-100"
+          leave="ease-in duration-200"
+          leaveFrom="opacity-100"
+          leaveTo="opacity-0"
+        >
+          <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" />
+        </Transition.Child>
+
+        <div className="fixed inset-0 overflow-y-auto">
+          <div className="flex min-h-full items-center justify-center p-4 text-center">
+            <Transition.Child
+              as={Fragment}
+              enter="ease-out duration-300"
+              enterFrom="opacity-0 scale-95"
+              enterTo="opacity-100 scale-100"
+              leave="ease-in duration-200"
+              leaveFrom="opacity-100 scale-100"
+              leaveTo="opacity-0 scale-95"
+            >
+              <Dialog.Panel className="w-full max-w-md transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
+                <Dialog.Title as="div" className="flex justify-between items-center">
+                  <h3 className="text-xl font-heading text-navy">
+                    Get your free prospectus
+                  </h3>
+                  <button
+                    onClick={onClose}
+                    className="text-slate hover:text-navy transition rounded-full p-1"
+                  >
+                    <XMarkIcon className="h-6 w-6" />
+                  </button>
+                </Dialog.Title>
+
+                {submitSuccess ? (
+                  <div className="mt-6 text-center py-8">
+                    <div className="w-16 h-16 bg-mint rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg
+                        className="w-8 h-8 text-turquoise"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M5 13l4 4L19 7"
+                        />
+                      </svg>
+                    </div>
+                    <h4 className="text-lg font-medium text-navy mb-2">
+                      Request sent!
+                    </h4>
+                    <p className="text-slate text-sm">
+                      The university will contact you shortly.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-4">
+                    <LeadForm
+                      form={form}
+                      isSubmitting={isSubmitting}
+                      onSubmit={handleSubmit}
+                      universityName={universityName}
+                    />
+                  </div>
+                )}
+              </Dialog.Panel>
+            </Transition.Child>
+          </div>
+        </div>
+      </Dialog>
+    </Transition>
+  );
+};
+// components/LeadForm/LeadFormButton.tsx
+'use client';
+
+import React, { useState } from 'react';
+import { LeadFormModal } from './LeadFormModal';
+import { Campaign } from '@/types/lead.types';
+
+interface LeadFormButtonProps {
+  campaign: Campaign;
+  universityName?: string;
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: string;
+  className?: string;
+  children?: React.ReactNode;
+  onSuccess?: () => void;
+}
+
+export const LeadFormButton: React.FC<LeadFormButtonProps> = ({
+  campaign,
+  universityName,
+  universitySlug,
+  subjectSlug,
+  degreeLevel,
+  className = '',
+  children,
+  onSuccess,
+}) => {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const openModal = () => setIsModalOpen(true);
+  const closeModal = () => setIsModalOpen(false);
+
+  return (
+    <>
+      <button
+        onClick={openModal}
+        className={`btn-turquoise ${className}`}
+        aria-haspopup="dialog"
+      >
+        {children || 'Request Prospectus'}
+      </button>
+      <LeadFormModal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        campaign={campaign}
+        universityName={universityName}
+        universitySlug={universitySlug}
+        subjectSlug={subjectSlug}
+        degreeLevel={degreeLevel}
+        onSuccess={onSuccess}
+      />
+    </>
+  );
+};
+// components/LeadForm/index.ts
+export { LeadFormButton } from './LeadFormButton';
+export { LeadFormModal } from './LeadFormModal';
+export { LeadForm } from './LeadForm';
+// __tests__/LeadForm.test.tsx
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { LeadFormButton } from '@/components/LeadForm';
+import { submitLead } from '@/lib/api/leads';
+
+jest.mock('@/lib/api/leads');
+jest.mock('@/lib/analytics');
+
+const mockCampaign = {
+  id: 'camp_123',
+  name: 'Test Campaign',
+  universitySlug: 'test-uni',
+};
+
+describe('LeadFormButton', () => {
+  beforeEach(() => {
+    (submitLead as jest.Mock).mockResolvedValue({ success: true, leadId: 'lead_123' });
+  });
+
+  it('opens modal on click', async () => {
+    render(
+      <LeadFormButton campaign={mockCampaign} universityName="Test University">
+        Get Info
+      </LeadFormButton>
+    );
+
+    const button = screen.getByText('Get Info');
+    await userEvent.click(button);
+
+    expect(screen.getByText('Get your free prospectus')).toBeInTheDocument();
+    expect(screen.getByText('Test University')).toBeInTheDocument();
+  });
+
+  it('submits the form successfully', async () => {
+    render(
+      <LeadFormButton campaign={mockCampaign} universityName="Test University">
+        Get Info
+      </LeadFormButton>
+    );
+
+    await userEvent.click(screen.getByText('Get Info'));
+
+    await userEvent.type(screen.getByLabelText(/first name/i), 'John');
+    await userEvent.type(screen.getByLabelText(/last name/i), 'Doe');
+    await userEvent.type(screen.getByLabelText(/email/i), 'john@example.com');
+    await userEvent.selectOptions(screen.getByLabelText(/country/i), 'United Kingdom');
+    await userEvent.click(screen.getByLabelText(/I agree/i));
+
+    await userEvent.click(screen.getByRole('button', { name: /request free prospectus/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/request sent/i)).toBeInTheDocument();
+    });
+  });
+
+  it('displays validation errors', async () => {
+    render(<LeadFormButton campaign={mockCampaign} />);
+
+    await userEvent.click(screen.getByText('Request Prospectus'));
+    await userEvent.click(screen.getByRole('button', { name: /request free prospectus/i }));
+
+    expect(await screen.findByText(/first name must be/i)).toBeInTheDocument();
+    expect(screen.getByText(/last name must be/i)).toBeInTheDocument();
+    expect(screen.getByText(/valid email/i)).toBeInTheDocument();
+    expect(screen.getByText(/select your country/i)).toBeInTheDocument();
+    expect(screen.getByText(/you must agree/i)).toBeInTheDocument();
+  });
+});
+// stories/LeadForm.stories.tsx
+import type { Meta, StoryObj } from '@storybook/react';
+import { LeadFormButton } from '../components/LeadForm';
+
+const meta: Meta<typeof LeadFormButton> = {
+  title: 'Components/LeadFormButton',
+  component: LeadFormButton,
+  tags: ['autodocs'],
+  argTypes: {
+    campaign: { control: 'object' },
+    universityName: { control: 'text' },
+  },
+};
+
+export default meta;
+type Story = StoryObj<typeof LeadFormButton>;
+
+export const Default: Story = {
+  args: {
+    campaign: { id: 'camp_1', name: 'Warwick Campaign', universitySlug: 'warwick' },
+    universityName: 'University of Warwick',
+    children: 'Request Prospectus',
+  },
+};
+
+export const WithCustomLabel: Story = {
+  args: {
+    campaign: { id: 'camp_2', name: 'LSE Campaign', universitySlug: 'lse' },
+    universityName: 'London School of Economics',
+    children: 'Download Brochure',
+  },
+};
+// Example usage in a university profile page
+import { LeadFormButton } from '@/components/LeadForm';
+
+const UniversityProfile = ({ university }) => {
+  // fetch campaign for this university
+  const campaign = {
+    id: 'uni_campaign_123',
+    name: `${university.name} Lead Gen`,
+    universitySlug: university.slug,
+  };
+
+  return (
+    <div>
+      <h1>{university.name}</h1>
+      <LeadFormButton
+        campaign={campaign}
+        universityName={university.name}
+        universitySlug={university.slug}
+      >
+        Request Prospectus
+      </LeadFormButton>
+    </div>
+  );
+};
+// tailwind.config.js
+module.exports = {
+  theme: {
+    extend: {
+      colors: {
+        navy: '#0B2D4A',
+        teal: '#1A5F6B',
+        turquoise: '#2AC3B4',
+        cyan: '#6CD4C9',
+        mint: '#B8E6DE',
+        blush: '#FFD9D9',
+        lavender: '#E2D1FF',
+        coral: '#FFC4B3',
+        'soft-grey': '#E5E9F0',
+        slate: '#5A6874',
+      },
+    },
+  },
+};
+-- Campaigns
+CREATE TABLE campaigns (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    partner_id UUID,
+    source TEXT,
+    medium TEXT,
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Lead clicks (raw tracking)
+CREATE TABLE lead_clicks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    campaign_id UUID REFERENCES campaigns(id),
+    ip_address INET,
+    user_agent TEXT,
+    fingerprint_hash TEXT,
+    referrer TEXT,
+    landing_page TEXT,
+    country TEXT,
+    city TEXT,
+    device_type TEXT,
+    browser TEXT,
+    os TEXT,
+    is_bot BOOLEAN DEFAULT false,
+    consent BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Lead conversions
+CREATE TABLE lead_conversions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    click_id UUID REFERENCES lead_clicks(id),
+    lead_id UUID,
+    conversion_type TEXT,
+    value_gbp NUMERIC(10,2),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Daily analytics
+CREATE TABLE campaign_analytics_daily (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    campaign_id UUID,
+    date DATE,
+    clicks INT DEFAULT 0,
+    unique_users INT DEFAULT 0,
+    conversions INT DEFAULT 0,
+    revenue_gbp NUMERIC(10,2) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(campaign_id, date)
+);
+from pydantic import BaseSettings
+
+class Settings(BaseSettings):
+    DATABASE_URL: str
+    REDIS_URL: str
+    SECRET_KEY: str
+    ENV: str = "production"
+    TRACKING_SALT: str = "ediguide_secure_salt"
+    GEOIP_DB: str = "./geoip.mmdb"
+
+settings = Settings()
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Numeric
+from sqlalchemy.dialects.postgresql import UUID, INET
+from sqlalchemy.sql import func
+from database.base import Base
+import uuid
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String)
+    partner_id = Column(UUID(as_uuid=True))
+    source = Column(String)
+    medium = Column(String)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+class LeadClick(Base):
+    __tablename__ = "lead_clicks"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id"))
+    ip_address = Column(INET)
+    user_agent = Column(String)
+    fingerprint_hash = Column(String)
+    referrer = Column(String)
+    landing_page = Column(String)
+    country = Column(String)
+    city = Column(String)
+    device_type = Column(String)
+    browser = Column(String)
+    os = Column(String)
+    is_bot = Column(Boolean, default=False)
+    consent = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+class LeadConversion(Base):
+    __tablename__ = "lead_conversions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    click_id = Column(UUID(as_uuid=True), ForeignKey("lead_clicks.id"))
+    lead_id = Column(UUID(as_uuid=True))
+    conversion_type = Column(String)
+    value_gbp = Column(Numeric)
+    created_at = Column(DateTime, server_default=func.now())
+import hashlib
+from config.settings import settings
+
+def generate_fingerprint(ip, user_agent, referrer):
+    raw = f"{ip}|{user_agent}|{referrer}|{settings.TRACKING_SALT}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+BOT_KEYWORDS = [
+    "bot", "spider", "crawl", "slurp", "facebookexternalhit",
+    "bingpreview", "crawler", "scanner", "headless"
+]
+
+def is_bot(user_agent: str) -> bool:
+    if not user_agent:
+        return True
+    ua = user_agent.lower()
+    return any(k in ua for k in BOT_KEYWORDS)
+import geoip2.database
+from config.settings import settings
+
+reader = geoip2.database.Reader(settings.GEOIP_DB)
+
+def resolve_geo(ip):
+    try:
+        response = reader.city(ip)
+        return {
+            "country": response.country.name,
+            "city": response.city.name
+        }
+    except:
+        return {"country": None, "city": None}
+import redis
+from config.settings import settings
+
+redis_client = redis.from_url(settings.REDIS_URL)
+
+def cache_click(fingerprint):
+    redis_client.setex(f"click:{fingerprint}", 3600, 1)
+
+def is_duplicate(fingerprint):
+    return redis_client.exists(f"click:{fingerprint}")
+from fastapi import APIRouter, Request, Response
+from sqlalchemy.orm import Session
+from database.session import get_db
+from .models import LeadClick, Campaign
+from .fingerprint import generate_fingerprint
+from .bot_detection import is_bot
+from .geo import resolve_geo
+from .cache import cache_click, is_duplicate
+from user_agents import parse
+from starlette.responses import RedirectResponse
+from config.settings import settings
+import base64
+
+router = APIRouter()
+
+PIXEL_GIF = base64.b64decode(
+    "R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+)
+
+@router.get("/api/leads/track")
+def track_pixel(
+    request: Request,
+    campaign_id: str,
+    consent: bool = False,
+    db: Session = next(get_db())
+):
+    ip = request.client.host
+    ua = request.headers.get("user-agent", "")
+    referrer = request.headers.get("referer", "")
+    landing = request.query_params.get("lp", "")
+
+    fingerprint = generate_fingerprint(ip, ua, referrer)
+
+    if is_duplicate(fingerprint):
+        return Response(content=PIXEL_GIF, media_type="image/gif")
+
+    bot = is_bot(ua)
+    geo = resolve_geo(ip)
+    ua_data = parse(ua)
+
+    click = LeadClick(
+        campaign_id=campaign_id,
+        ip_address=ip,
+        user_agent=ua,
+        fingerprint_hash=fingerprint,
+        referrer=referrer,
+        landing_page=landing,
+        country=geo["country"],
+        city=geo["city"],
+        device_type=ua_data.device.family,
+        browser=ua_data.browser.family,
+        os=ua_data.os.family,
+        is_bot=bot,
+        consent=consent
+    )
+
+    db.add(click)
+    db.commit()
+    cache_click(fingerprint)
+
+    return Response(content=PIXEL_GIF, media_type="image/gif")
+
+
+@router.get("/api/leads/click")
+def click_redirect(
+    request: Request,
+    campaign_id: str,
+    target: str,
+    consent: bool = False,
+    db: Session = next(get_db())
+):
+    ip = request.client.host
+    ua = request.headers.get("user-agent", "")
+    referrer = request.headers.get("referer", "")
+
+    fingerprint = generate_fingerprint(ip, ua, referrer)
+
+    if not is_duplicate(fingerprint):
+        geo = resolve_geo(ip)
+        ua_data = parse(ua)
+
+        click = LeadClick(
+            campaign_id=campaign_id,
+            ip_address=ip,
+            user_agent=ua,
+            fingerprint_hash=fingerprint,
+            referrer=referrer,
+            landing_page=target,
+            country=geo["country"],
+            city=geo["city"],
+            device_type=ua_data.device.family,
+            browser=ua_data.browser.family,
+            os=ua_data.os.family,
+            is_bot=is_bot(ua),
+            consent=consent
+        )
+        db.add(click)
+        db.commit()
+        cache_click(fingerprint)
+
+    return RedirectResponse(url=target)
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from datetime import date
+from database.session import get_db
+from .models import LeadClick, LeadConversion
+from database.base import Base
+from sqlalchemy import text
+
+def aggregate_daily():
+    db: Session = next(get_db())
+    today = date.today()
+
+    query = text("""
+    INSERT INTO campaign_analytics_daily (campaign_id, date, clicks, unique_users, conversions, revenue_gbp)
+    SELECT 
+        lc.campaign_id,
+        CURRENT_DATE,
+        COUNT(*) AS clicks,
+        COUNT(DISTINCT lc.fingerprint_hash) AS unique_users,
+        COUNT(lcv.id) AS conversions,
+        COALESCE(SUM(lcv.value_gbp),0)
+    FROM lead_clicks lc
+    LEFT JOIN lead_conversions lcv ON lc.id = lcv.click_id
+    WHERE DATE(lc.created_at) = CURRENT_DATE
+    GROUP BY lc.campaign_id
+    ON CONFLICT (campaign_id, date)
+    DO UPDATE SET
+        clicks = EXCLUDED.clicks,
+        unique_users = EXCLUDED.unique_users,
+        conversions = EXCLUDED.conversions,
+        revenue_gbp = EXCLUDED.revenue_gbp;
+    """)
+
+    db.execute(query)
+    db.commit()
+export function loadLeadPixel(campaignId: string, consent: boolean) {
+  const img = new Image()
+  const params = new URLSearchParams({
+    campaign_id: campaignId,
+    consent: String(consent),
+    lp: window.location.href
+  })
+  img.src = `${process.env.NEXT_PUBLIC_API_URL}/api/leads/track?${params.toString()}`
+}
+type Props = {
+  campaignId: string
+  target: string
+  children: React.ReactNode
+  consent: boolean
+}
+
+export default function TrackedLink({ campaignId, target, children, consent }: Props) {
+  const url = `${process.env.NEXT_PUBLIC_API_URL}/api/leads/click?campaign_id=${campaignId}&target=${encodeURIComponent(target)}&consent=${consent}`
+
+  return (
+    <a href={url} rel="noopener noreferrer">
+      {children}
+    </a>
+  )
+}
+import { useState, useEffect } from "react"
+
+export function useConsent() {
+  const [consent, setConsent] = useState(false)
+
+  useEffect(() => {
+    const c = localStorage.getItem("ediguide_consent")
+    if (c) setConsent(c === "true")
+  }, [])
+
+  const grant = () => {
+    localStorage.setItem("ediguide_consent", "true")
+    setConsent(true)
+  }
+
+  const revoke = () => {
+    localStorage.setItem("ediguide_consent", "false")
+    setConsent(false)
+  }
+
+  return { consent, grant, revoke }
+}
+import time
+from fastapi import Request
+
+async def tracking_logger(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration = time.time() - start
+    response.headers["X-Process-Time"] = str(duration)
+    return response
+from fastapi import FastAPI
+from modules.leads_tracking.routes import router as tracking_router
+from middleware.tracking_logger import tracking_logger
+
+app = FastAPI()
+app.middleware("http")(tracking_logger)
+app.include_router(tracking_router)
+User Click
+ → Tracking Pixel
+ → Fingerprint Hash
+ → Bot Detection
+ → Geo Resolve
+ → Redis Dedup
+ → PostgreSQL Store
+ → Analytics Aggregation
+ → Campaign Dashboard

@@ -26879,4 +26879,2087 @@ Monetisation Ready: Yes
 
 This module is designed to integrate directly into the Ediguide platform ecosystem.
 """
+"""
+Affiliate models for SQLAlchemy.
 
+Includes tables for partners, links, clicks, and conversions.
+"""
+
+from datetime import datetime
+from sqlalchemy import (
+    Column, String, Integer, Boolean, DateTime, ForeignKey, Text,
+    Numeric, JSON, Index, UniqueConstraint, CheckConstraint, BigInteger
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB, INET
+from sqlalchemy.orm import relationship
+import uuid
+
+from app.core.database import Base
+
+
+class AffiliatePartner(Base):
+    """Represents an affiliate network or direct partner (e.g., Awin, Santander)."""
+    __tablename__ = "affiliate_partners"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    network = Column(String(100), nullable=True)  # 'awin', 'impact', 'direct'
+    network_id = Column(String(255), nullable=True)  # partner ID in their system
+    commission_rate = Column(Numeric(5, 2), nullable=True)  # default rate %
+    cookie_days = Column(Integer, default=30)
+    base_url = Column(Text, nullable=True)  # base URL for link construction
+    api_endpoint = Column(Text, nullable=True)  # for reporting conversions
+    api_key = Column(Text, nullable=True)  # encrypted at rest
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # relationships
+    links = relationship("AffiliateLink", back_populates="partner", cascade="all, delete-orphan")
+    clicks = relationship("AffiliateClick", back_populates="partner")
+    conversions = relationship("AffiliateConversion", back_populates="partner")
+
+    __table_args__ = (
+        Index("ix_affiliate_partner_network", "network", "network_id"),
+    )
+
+
+class AffiliateLink(Base):
+    """Individual product or service links with targeting rules."""
+    __tablename__ = "affiliate_links"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    partner_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_partners.id"), nullable=False)
+    category = Column(String(100), nullable=False)  # 'banking', 'accommodation', 'textbooks', etc.
+    subcategory = Column(String(100), nullable=True)
+    product_name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    destination_url = Column(Text, nullable=False)  # base URL before tracking
+    image_url = Column(Text, nullable=True)
+    commission_rate = Column(Numeric(5, 2), nullable=True)  # override if different
+    commission_fixed = Column(Numeric(10, 2), nullable=True)  # e.g., £50 per account
+    currency = Column(String(3), default="GBP")
+    tracking_param = Column(String(255), nullable=True)  # e.g., '?ref=ediguide'
+    click_count = Column(BigInteger, default=0)
+    conversion_count = Column(BigInteger, default=0)
+    revenue_generated = Column(Numeric(12, 2), default=0)
+    priority = Column(Integer, default=5)  # 1 (highest) to 10
+    active = Column(Boolean, default=True)
+
+    # targeting rules stored as JSONB
+    # example: {"universities": ["oxford", "cambridge"], "subjects": ["cs"], "regions": ["london"], "degree_levels": ["undergraduate"]}
+    targeting_rules = Column(JSONB, nullable=True, default={})
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # relationships
+    partner = relationship("AffiliatePartner", back_populates="links")
+    clicks = relationship("AffiliateClick", back_populates="link")
+    conversions = relationship("AffiliateConversion", back_populates="link")
+
+    __table_args__ = (
+        Index("ix_affiliate_link_category", "category"),
+        Index("ix_affiliate_link_active", "active"),
+        Index("ix_affiliate_link_partner", "partner_id"),
+    )
+
+
+class AffiliateClick(Base):
+    """Track every click on an affiliate link."""
+    __tablename__ = "affiliate_clicks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    link_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_links.id"), nullable=False)
+    partner_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_partners.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=True)  # if logged in
+    session_id = Column(String(255), nullable=True)
+    ip_address = Column(INET, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    referer = Column(Text, nullable=True)
+    page_url = Column(Text, nullable=True)  # where the click occurred
+    university_slug = Column(String(100), nullable=True)
+    subject_slug = Column(String(100), nullable=True)
+    degree_level = Column(String(50), nullable=True)
+    converted = Column(Boolean, default=False)
+    conversion_amount = Column(Numeric(10, 2), nullable=True)
+    conversion_id = Column(UUID(as_uuid=True), nullable=True)  # link to conversion table
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # relationships
+    link = relationship("AffiliateLink", back_populates="clicks")
+    partner = relationship("AffiliatePartner", back_populates="clicks")
+
+    __table_args__ = (
+        Index("ix_affiliate_click_created", "created_at"),
+        Index("ix_affiliate_click_link", "link_id"),
+        Index("ix_affiliate_click_session", "session_id"),
+    )
+
+
+class AffiliateConversion(Base):
+    """Record when a click leads to a sale/lead."""
+    __tablename__ = "affiliate_conversions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    click_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_clicks.id"), nullable=False)
+    link_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_links.id"), nullable=False)
+    partner_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_partners.id"), nullable=False)
+    order_id = Column(String(255), nullable=True)  # partner's order ID
+    order_value = Column(Numeric(10, 2), nullable=True)
+    commission_amount = Column(Numeric(10, 2), nullable=True)
+    currency = Column(String(3), default="GBP")
+    status = Column(String(50), default="pending")  # pending, confirmed, rejected
+    reported_at = Column(DateTime, nullable=True)  # when reported by network
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # relationships
+    click = relationship("AffiliateClick", backref="conversion")
+    link = relationship("AffiliateLink", back_populates="conversions")
+    partner = relationship("AffiliatePartner", back_populates="conversions")
+
+    __table_args__ = (
+        UniqueConstraint("click_id", name="uq_affiliate_conversion_click"),
+        Index("ix_affiliate_conversion_status", "status"),
+    )
+"""
+Pydantic schemas for affiliate data validation and serialization.
+"""
+
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+from uuid import UUID
+from decimal import Decimal
+
+from pydantic import BaseModel, Field, HttpUrl, validator
+
+
+class AffiliatePartnerBase(BaseModel):
+    name: str
+    network: Optional[str] = None
+    network_id: Optional[str] = None
+    commission_rate: Optional[Decimal] = None
+    cookie_days: int = 30
+    base_url: Optional[str] = None
+    api_endpoint: Optional[str] = None
+    active: bool = True
+
+
+class AffiliatePartnerCreate(AffiliatePartnerBase):
+    api_key: Optional[str] = None
+
+
+class AffiliatePartnerUpdate(AffiliatePartnerBase):
+    name: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+class AffiliatePartnerResponse(AffiliatePartnerBase):
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class AffiliateLinkBase(BaseModel):
+    partner_id: UUID
+    category: str
+    subcategory: Optional[str] = None
+    product_name: str
+    description: Optional[str] = None
+    destination_url: str
+    image_url: Optional[str] = None
+    commission_rate: Optional[Decimal] = None
+    commission_fixed: Optional[Decimal] = None
+    currency: str = "GBP"
+    tracking_param: Optional[str] = None
+    priority: int = 5
+    active: bool = True
+    targeting_rules: Dict[str, Any] = Field(default_factory=dict)
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
+
+class AffiliateLinkCreate(AffiliateLinkBase):
+    pass
+
+
+class AffiliateLinkUpdate(BaseModel):
+    partner_id: Optional[UUID] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    product_name: Optional[str] = None
+    description: Optional[str] = None
+    destination_url: Optional[str] = None
+    image_url: Optional[str] = None
+    commission_rate: Optional[Decimal] = None
+    commission_fixed: Optional[Decimal] = None
+    currency: Optional[str] = None
+    tracking_param: Optional[str] = None
+    priority: Optional[int] = None
+    active: Optional[bool] = None
+    targeting_rules: Optional[Dict[str, Any]] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
+
+class AffiliateLinkResponse(AffiliateLinkBase):
+    id: UUID
+    click_count: int
+    conversion_count: int
+    revenue_generated: Decimal
+    created_at: datetime
+    updated_at: datetime
+    partner: Optional[AffiliatePartnerResponse] = None
+
+    class Config:
+        orm_mode = True
+
+
+class RecommendationContext(BaseModel):
+    university_slug: Optional[str] = None
+    subject_slug: Optional[str] = None
+    degree_level: Optional[str] = None  # undergraduate, postgraduate, phd
+    region: Optional[str] = None  # london, north_west, etc.
+    user_id: Optional[UUID] = None
+    session_id: Optional[str] = None
+    limit: int = Field(5, ge=1, le=20)
+
+
+class RecommendedProduct(BaseModel):
+    link_id: UUID
+    product_name: str
+    description: Optional[str]
+    category: str
+    image_url: Optional[str]
+    destination_url: str  # will include tracking
+    partner_name: str
+    commission_display: Optional[str]  # e.g., "Up to £100 cashback"
+    priority: int
+
+
+class AffiliateClickTrack(BaseModel):
+    link_id: UUID
+    university_slug: Optional[str] = None
+    subject_slug: Optional[str] = None
+    degree_level: Optional[str] = None
+    page_url: Optional[str] = None
+
+
+class AffiliateClickResponse(BaseModel):
+    click_id: UUID
+    redirect_url: str
+
+
+class AffiliateConversionReport(BaseModel):
+    click_id: UUID
+    order_id: str
+    order_value: Decimal
+    currency: str = "GBP"
+    commission: Optional[Decimal] = None
+    status: str = "confirmed"
+"""
+Core recommendation engine for affiliate products.
+
+Scoring algorithm based on context matching, priority, and popularity.
+"""
+
+import logging
+from typing import List, Optional, Dict, Any
+from uuid import UUID
+from datetime import datetime
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, or_, desc
+
+from app.models.affiliate import AffiliateLink, AffiliatePartner
+from app.schemas.affiliate import RecommendationContext, RecommendedProduct
+
+logger = logging.getLogger(__name__)
+
+
+class AffiliateRecommendationEngine:
+    """Scores and selects relevant affiliate links based on user context."""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_recommendations(
+        self,
+        context: RecommendationContext,
+    ) -> List[RecommendedProduct]:
+        """
+        Main entry point: returns ranked list of affiliate products.
+        """
+        # 1. Fetch all active links that are currently valid
+        query = (
+            select(AffiliateLink)
+            .join(AffiliatePartner)
+            .where(
+                AffiliateLink.active == True,
+                AffiliatePartner.active == True,
+                or_(
+                    AffiliateLink.start_date.is_(None),
+                    AffiliateLink.start_date <= datetime.utcnow(),
+                ),
+                or_(
+                    AffiliateLink.end_date.is_(None),
+                    AffiliateLink.end_date >= datetime.utcnow(),
+                ),
+            )
+        )
+        result = await self.db.execute(query)
+        links = result.scalars().all()
+
+        # 2. Score each link
+        scored = []
+        for link in links:
+            score = self._calculate_score(link, context)
+            if score > 0:
+                scored.append((score, link))
+
+        # 3. Sort by score descending, then priority
+        scored.sort(key=lambda x: (-x[0], -x[1].priority))
+
+        # 4. Build response objects
+        recommended = []
+        for score, link in scored[: context.limit]:
+            product = await self._build_product(link, context)
+            recommended.append(product)
+
+        return recommended
+
+    def _calculate_score(
+        self,
+        link: AffiliateLink,
+        context: RecommendationContext,
+    ) -> float:
+        """
+        Scoring algorithm:
+        - Base score = priority (1-10) normalized to 1-10.
+        - Add category boost if category matches context subject.
+        - Add university boost if university in targeting.
+        - Add region boost if region matches.
+        - Add popularity boost based on click count (log scale).
+        - Time decay for old links (optional).
+        Returns a float score; zero if not eligible.
+        """
+        score = float(link.priority)  # base 1-10
+
+        # Check if targeting rules exclude this link
+        if not self._is_eligible(link.targeting_rules, context):
+            return 0.0
+
+        # Category-based boost (configurable)
+        if link.category == "banking" and context.subject_slug in [
+            "economics",
+            "finance",
+            "business",
+        ]:
+            score += 2.0
+        elif link.category == "textbooks" and context.subject_slug:
+            # Any subject could need textbooks, but extra boost for heavy-reading subjects
+            if context.subject_slug in [
+                "medicine",
+                "law",
+                "history",
+                "english",
+            ]:
+                score += 1.5
+        elif link.category == "accommodation" and context.university_slug:
+            score += 1.0  # always relevant if university known
+
+        # Region boost (if link targets a specific region)
+        if (
+            "regions" in link.targeting_rules
+            and context.region
+            and context.region in link.targeting_rules["regions"]
+        ):
+            score += 3.0
+
+        # University exact match boost
+        if (
+            "universities" in link.targeting_rules
+            and context.university_slug
+            and context.university_slug in link.targeting_rules["universities"]
+        ):
+            score += 5.0
+
+        # Subject exact match boost
+        if (
+            "subjects" in link.targeting_rules
+            and context.subject_slug
+            and context.subject_slug in link.targeting_rules["subjects"]
+        ):
+            score += 4.0
+
+        # Degree level match
+        if (
+            "degree_levels" in link.targeting_rules
+            and context.degree_level
+            and context.degree_level in link.targeting_rules["degree_levels"]
+        ):
+            score += 2.0
+
+        # Popularity factor (log scale, max +2)
+        if link.click_count > 0:
+            import math
+
+            popularity = min(2.0, math.log10(link.click_count) * 0.5)
+            score += popularity
+
+        # Freshness (optional)
+        if link.created_at:
+            days_old = (datetime.utcnow() - link.created_at).days
+            if days_old > 365:
+                score -= 0.5  # slight penalty for old links
+
+        return max(score, 0.0)
+
+    def _is_eligible(
+        self,
+        rules: Dict[str, Any],
+        context: RecommendationContext,
+    ) -> bool:
+        """
+        Check if context satisfies all targeting rules.
+        Rules are interpreted as AND conditions.
+        """
+        # If rules is empty, always eligible
+        if not rules:
+            return True
+
+        # University inclusion/exclusion
+        if "universities" in rules:
+            if context.university_slug not in rules["universities"]:
+                return False
+
+        if "exclude_universities" in rules:
+            if context.university_slug in rules["exclude_universities"]:
+                return False
+
+        # Subjects
+        if "subjects" in rules:
+            if context.subject_slug not in rules["subjects"]:
+                return False
+
+        if "exclude_subjects" in rules:
+            if context.subject_slug in rules["exclude_subjects"]:
+                return False
+
+        # Regions
+        if "regions" in rules:
+            if context.region not in rules["regions"]:
+                return False
+
+        # Degree levels
+        if "degree_levels" in rules:
+            if context.degree_level not in rules["degree_levels"]:
+                return False
+
+        # Custom boolean expression can be added later
+        return True
+
+    async def _build_product(
+        self,
+        link: AffiliateLink,
+        context: RecommendationContext,
+    ) -> RecommendedProduct:
+        """
+        Construct the final product object with tracked URL.
+        """
+        # Generate tracking URL (append click ID later after click is recorded)
+        # For now, we return the destination URL with a placeholder.
+        # The actual redirect will be handled by /click endpoint.
+        base = link.destination_url
+        param = link.tracking_param or ""
+        # Usually we'd add a source parameter
+        if "?" in base:
+            sep = "&"
+        else:
+            sep = "?"
+        tracked_url = f"{base}{sep}{param}ediguide"
+
+        # Commission display string
+        commission_display = None
+        if link.commission_fixed:
+            commission_display = f"£{link.commission_fixed} reward"
+        elif link.commission_rate:
+            commission_display = f"{link.commission_rate}% cashback"
+        elif link.partner and link.partner.commission_rate:
+            commission_display = f"{link.partner.commission_rate}% cashback"
+
+        return RecommendedProduct(
+            link_id=link.id,
+            product_name=link.product_name,
+            description=link.description,
+            category=link.category,
+            image_url=link.image_url,
+            destination_url=tracked_url,  # will be overridden after click
+            partner_name=link.partner.name if link.partner else "",
+            commission_display=commission_display,
+            priority=link.priority,
+        )
+"""
+API routes for affiliate recommendations and tracking.
+"""
+
+import logging
+from uuid import UUID
+from fastapi import APIRouter, Depends, Request, HTTPException, Query
+from fastapi.responses import RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+
+from app.core.database import get_db
+from app.core.security import get_current_user_optional
+from app.models.affiliate import AffiliateLink, AffiliateClick, AffiliateConversion
+from app.schemas.affiliate import (
+    RecommendationContext,
+    RecommendedProduct,
+    AffiliateClickTrack,
+    AffiliateClickResponse,
+    AffiliateConversionReport,
+)
+from app.services.recommendation_engine import AffiliateRecommendationEngine
+from app.services.affiliate_network import report_conversion_to_network
+
+router = APIRouter(prefix="/affiliate", tags=["affiliate"])
+logger = logging.getLogger(__name__)
+
+
+@router.post("/recommendations", response_model=list[RecommendedProduct])
+async def get_recommendations(
+    context: RecommendationContext,
+    db: AsyncSession = Depends(get_db),
+    user_id: Optional[UUID] = Depends(get_current_user_optional),
+):
+    """
+    Return personalized affiliate product recommendations.
+    """
+    if user_id:
+        context.user_id = user_id
+    engine = AffiliateRecommendationEngine(db)
+    products = await engine.get_recommendations(context)
+    return products
+
+
+@router.get("/recommendations", response_model=list[RecommendedProduct])
+async def get_recommendations_query(
+    university_slug: Optional[str] = Query(None),
+    subject_slug: Optional[str] = Query(None),
+    degree_level: Optional[str] = Query(None),
+    region: Optional[str] = Query(None),
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    user_id: Optional[UUID] = Depends(get_current_user_optional),
+):
+    """
+    GET version of recommendations (easier for frontend).
+    """
+    context = RecommendationContext(
+        university_slug=university_slug,
+        subject_slug=subject_slug,
+        degree_level=degree_level,
+        region=region,
+        limit=limit,
+    )
+    if user_id:
+        context.user_id = user_id
+    engine = AffiliateRecommendationEngine(db)
+    products = await engine.get_recommendations(context)
+    return products
+
+
+@router.post("/click", response_model=AffiliateClickResponse)
+async def track_click(
+    click_data: AffiliateClickTrack,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user_id: Optional[UUID] = Depends(get_current_user_optional),
+):
+    """
+    Record a click on an affiliate link and return a redirect URL with tracking.
+    """
+    # Fetch the link
+    result = await db.execute(
+        select(AffiliateLink).where(
+            AffiliateLink.id == click_data.link_id,
+            AffiliateLink.active == True,
+        )
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Affiliate link not found")
+
+    # Create click record
+    click = AffiliateClick(
+        link_id=link.id,
+        partner_id=link.partner_id,
+        user_id=user_id,
+        session_id=request.session.get("session_id") if hasattr(request, "session") else None,
+        ip_address=request.client.host,
+        user_agent=request.headers.get("user-agent"),
+        referer=request.headers.get("referer"),
+        page_url=click_data.page_url,
+        university_slug=click_data.university_slug,
+        subject_slug=click_data.subject_slug,
+        degree_level=click_data.degree_level,
+    )
+    db.add(click)
+    await db.commit()
+    await db.refresh(click)
+
+    # Update click count on link
+    stmt = (
+        update(AffiliateLink)
+        .where(AffiliateLink.id == link.id)
+        .values(click_count=AffiliateLink.click_count + 1)
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    # Build final URL with click ID (for conversion tracking)
+    base = link.destination_url
+    param = link.tracking_param or ""
+    separator = "&" if "?" in base else "?"
+    # Add click_id as a parameter so partner can send it back
+    click_param = f"ediguide_click_id={click.id}"
+    if param:
+        final_url = f"{base}{separator}{param}&{click_param}"
+    else:
+        final_url = f"{base}{separator}{click_param}"
+
+    # Some affiliate networks require specific parameter names; we can adjust based on partner.
+    # For now, we use a generic approach.
+
+    logger.info(f"Affiliate click tracked: {click.id} -> {link.product_name}")
+
+    return AffiliateClickResponse(
+        click_id=click.id,
+        redirect_url=final_url,
+    )
+
+
+@router.get("/click/{click_id}/redirect")
+async def redirect_after_click(
+    click_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Alternative redirect endpoint that uses a stored click.
+    """
+    result = await db.execute(
+        select(AffiliateClick).where(AffiliateClick.id == click_id)
+    )
+    click = result.scalar_one_or_none()
+    if not click:
+        raise HTTPException(status_code=404, detail="Click not found")
+
+    result = await db.execute(
+        select(AffiliateLink).where(AffiliateLink.id == click.link_id)
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    # Build URL
+    base = link.destination_url
+    param = link.tracking_param or ""
+    separator = "&" if "?" in base else "?"
+    final_url = f"{base}{separator}{param}&click_id={click_id}"
+
+    return RedirectResponse(url=final_url)
+
+
+@router.post("/conversion")
+async def report_conversion(
+    conversion: AffiliateConversionReport,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Endpoint for affiliate networks to report conversions (or called by our system after sale).
+    """
+    # Verify click exists
+    result = await db.execute(
+        select(AffiliateClick).where(AffiliateClick.id == conversion.click_id)
+    )
+    click = result.scalar_one_or_none()
+    if not click:
+        raise HTTPException(status_code=404, detail="Click not found")
+
+    # Check if conversion already recorded
+    result = await db.execute(
+        select(AffiliateConversion).where(
+            AffiliateConversion.click_id == conversion.click_id
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        # Update existing
+        existing.order_id = conversion.order_id
+        existing.order_value = conversion.order_value
+        existing.commission_amount = conversion.commission
+        existing.status = conversion.status
+        existing.reported_at = datetime.utcnow()
+        await db.commit()
+        return {"status": "updated", "conversion_id": existing.id}
+    else:
+        # Create new
+        conv = AffiliateConversion(
+            click_id=click.id,
+            link_id=click.link_id,
+            partner_id=click.partner_id,
+            order_id=conversion.order_id,
+            order_value=conversion.order_value,
+            commission_amount=conversion.commission,
+            currency=conversion.currency,
+            status=conversion.status,
+            reported_at=datetime.utcnow(),
+        )
+        db.add(conv)
+        await db.commit()
+        await db.refresh(conv)
+
+        # Update click converted flag
+        click.converted = True
+        click.conversion_amount = conversion.commission
+        click.conversion_id = conv.id
+        await db.commit()
+
+        # Update link conversion stats
+        stmt = (
+            update(AffiliateLink)
+            .where(AffiliateLink.id == click.link_id)
+            .values(
+                conversion_count=AffiliateLink.conversion_count + 1,
+                revenue_generated=AffiliateLink.revenue_generated + (conversion.commission or 0),
+            )
+        )
+        await db.execute(stmt)
+        await db.commit()
+
+        return {"status": "created", "conversion_id": conv.id}
+"""
+Integration with external affiliate networks (Awin, Impact, etc.)
+Handles reporting and fetching commission data.
+"""
+
+import logging
+import httpx
+from typing import Optional, Dict, Any
+from datetime import datetime
+from uuid import UUID
+
+from app.core.config import settings
+from app.models.affiliate import AffiliatePartner, AffiliateClick
+
+logger = logging.getLogger(__name__)
+
+
+class AffiliateNetworkClient:
+    """Base class for network-specific API clients."""
+
+    def __init__(self, partner: AffiliatePartner):
+        self.partner = partner
+        self.api_key = partner.api_key
+        self.base_url = partner.api_endpoint
+
+    async def report_conversion(self, click: AffiliateClick, order_value: float, order_id: str) -> Dict[str, Any]:
+        """
+        Report a conversion to the network. To be overridden by subclasses.
+        """
+        raise NotImplementedError
+
+
+class AwinClient(AffiliateNetworkClient):
+    """Awin (Affiliate Window) integration."""
+
+    async def report_conversion(self, click: AffiliateClick, order_value: float, order_id: str) -> Dict[str, Any]:
+        """
+        Awin conversion tracking API.
+        Documentation: https://wiki.awin.com/index.php/Publisher_API
+        """
+        if not self.api_key:
+            logger.error("Awin API key missing for partner %s", self.partner.id)
+            return {"success": False, "error": "No API key"}
+
+        # Awin expects clickref parameter to be passed; we stored it in the click record
+        # We need to map our click ID to the clickref sent to Awin.
+        # In our redirect, we added ediguide_click_id; Awin may have its own clickref.
+        # For now, we assume we have a clickref stored in click.referer or elsewhere.
+        # This is simplified; real integration requires handling Awin's click reference.
+
+        url = f"{self.base_url}/publishers/conversion"
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        payload = {
+            "clickRef": str(click.id),  # assuming we sent this as clickref
+            "orderRef": order_id,
+            "orderValue": order_value,
+            "commission": order_value * (self.partner.commission_rate / 100) if self.partner.commission_rate else 0,
+            "currency": "GBP",
+            "conversionDate": datetime.utcnow().isoformat(),
+        }
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Awin API error: {e.response.text}")
+                return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.exception("Awin reporting failed")
+                return {"success": False, "error": str(e)}
+
+
+class ImpactClient(AffiliateNetworkClient):
+    """Impact Radius integration."""
+
+    async def report_conversion(self, click: AffiliateClick, order_value: float, order_id: str) -> Dict[str, Any]:
+        # Similar implementation
+        pass
+
+
+async def report_conversion_to_network(
+    partner_id: UUID,
+    click_id: UUID,
+    order_value: float,
+    order_id: str,
+    db,
+) -> bool:
+    """
+    Utility function to report a conversion to the appropriate network.
+    Called after a sale is confirmed.
+    """
+    from sqlalchemy import select
+    from app.models.affiliate import AffiliatePartner, AffiliateClick
+
+    partner = await db.get(AffiliatePartner, partner_id)
+    click = await db.get(AffiliateClick, click_id)
+
+    if not partner or not click:
+        logger.error("Partner or click not found for conversion report")
+        return False
+
+    if partner.network == "awin":
+        client = AwinClient(partner)
+    elif partner.network == "impact":
+        client = ImpactClient(partner)
+    else:
+        logger.warning(f"No client for network {partner.network}")
+        return False
+
+    result = await client.report_conversion(click, order_value, order_id)
+    return result.get("success", False)
+"""
+Admin routes for managing affiliate partners and links.
+"""
+
+from uuid import UUID
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+
+from app.core.database import get_db
+from app.core.security import require_admin
+from app.models.affiliate import AffiliatePartner, AffiliateLink, AffiliateClick, AffiliateConversion
+from app.schemas.affiliate import (
+    AffiliatePartnerCreate,
+    AffiliatePartnerUpdate,
+    AffiliatePartnerResponse,
+    AffiliateLinkCreate,
+    AffiliateLinkUpdate,
+    AffiliateLinkResponse,
+)
+
+router = APIRouter(prefix="/admin/affiliate", tags=["admin-affiliate"], dependencies=[Depends(require_admin)])
+
+
+@router.get("/partners", response_model=List[AffiliatePartnerResponse])
+async def list_partners(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(AffiliatePartner).offset(skip).limit(limit).order_by(AffiliatePartner.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.post("/partners", response_model=AffiliatePartnerResponse)
+async def create_partner(
+    partner: AffiliatePartnerCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    db_partner = AffiliatePartner(**partner.dict())
+    db.add(db_partner)
+    await db.commit()
+    await db.refresh(db_partner)
+    return db_partner
+
+
+@router.get("/partners/{partner_id}", response_model=AffiliatePartnerResponse)
+async def get_partner(
+    partner_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    partner = await db.get(AffiliatePartner, partner_id)
+    if not partner:
+        raise HTTPException(status_code=404, detail="Partner not found")
+    return partner
+
+
+@router.put("/partners/{partner_id}", response_model=AffiliatePartnerResponse)
+async def update_partner(
+    partner_id: UUID,
+    partner_update: AffiliatePartnerUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    partner = await db.get(AffiliatePartner, partner_id)
+    if not partner:
+        raise HTTPException(status_code=404, detail="Partner not found")
+
+    for key, value in partner_update.dict(exclude_unset=True).items():
+        setattr(partner, key, value)
+
+    await db.commit()
+    await db.refresh(partner)
+    return partner
+
+
+@router.delete("/partners/{partner_id}")
+async def delete_partner(
+    partner_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    partner = await db.get(AffiliatePartner, partner_id)
+    if not partner:
+        raise HTTPException(status_code=404, detail="Partner not found")
+    await db.delete(partner)
+    await db.commit()
+    return {"message": "Partner deleted"}
+
+
+@router.get("/links", response_model=List[AffiliateLinkResponse])
+async def list_links(
+    partner_id: Optional[UUID] = None,
+    category: Optional[str] = None,
+    active_only: bool = True,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(AffiliateLink)
+    if partner_id:
+        query = query.where(AffiliateLink.partner_id == partner_id)
+    if category:
+        query = query.where(AffiliateLink.category == category)
+    if active_only:
+        query = query.where(AffiliateLink.active == True)
+    query = query.offset(skip).limit(limit).order_by(AffiliateLink.created_at.desc())
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.post("/links", response_model=AffiliateLinkResponse)
+async def create_link(
+    link: AffiliateLinkCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    # Verify partner exists
+    partner = await db.get(AffiliatePartner, link.partner_id)
+    if not partner:
+        raise HTTPException(status_code=400, detail="Invalid partner_id")
+
+    db_link = AffiliateLink(**link.dict())
+    db.add(db_link)
+    await db.commit()
+    await db.refresh(db_link)
+    return db_link
+
+
+@router.get("/links/{link_id}", response_model=AffiliateLinkResponse)
+async def get_link(
+    link_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    link = await db.get(AffiliateLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    return link
+
+
+@router.put("/links/{link_id}", response_model=AffiliateLinkResponse)
+async def update_link(
+    link_id: UUID,
+    link_update: AffiliateLinkUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    link = await db.get(AffiliateLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    for key, value in link_update.dict(exclude_unset=True).items():
+        setattr(link, key, value)
+
+    await db.commit()
+    await db.refresh(link)
+    return link
+
+
+@router.delete("/links/{link_id}")
+async def delete_link(
+    link_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    link = await db.get(AffiliateLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    await db.delete(link)
+    await db.commit()
+    return {"message": "Link deleted"}
+
+
+@router.get("/stats/dashboard")
+async def affiliate_dashboard(
+    days: int = 30,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return aggregated stats for admin dashboard."""
+    from sqlalchemy import func, and_
+    from datetime import datetime, timedelta
+
+    since = datetime.utcnow() - timedelta(days=days)
+
+    # Total clicks
+    clicks_result = await db.execute(
+        select(func.count(AffiliateClick.id)).where(AffiliateClick.created_at >= since)
+    )
+    total_clicks = clicks_result.scalar()
+
+    # Total conversions
+    conversions_result = await db.execute(
+        select(func.count(AffiliateConversion.id)).where(AffiliateConversion.created_at >= since)
+    )
+    total_conversions = conversions_result.scalar()
+
+    # Revenue
+    revenue_result = await db.execute(
+        select(func.sum(AffiliateConversion.commission_amount)).where(
+            and_(
+                AffiliateConversion.created_at >= since,
+                AffiliateConversion.status == "confirmed",
+            )
+        )
+    )
+    total_revenue = revenue_result.scalar() or 0
+
+    # Top links
+    top_links_result = await db.execute(
+        select(
+            AffiliateLink.id,
+            AffiliateLink.product_name,
+            func.count(AffiliateClick.id).label("clicks"),
+        )
+        .join(AffiliateClick, AffiliateLink.id == AffiliateClick.link_id)
+        .where(AffiliateClick.created_at >= since)
+        .group_by(AffiliateLink.id)
+        .order_by(func.count(AffiliateClick.id).desc())
+        .limit(10)
+    )
+    top_links = [dict(row) for row in top_links_result]
+
+    return {
+        "period_days": days,
+        "total_clicks": total_clicks,
+        "total_conversions": total_conversions,
+        "total_revenue": float(total_revenue),
+        "conversion_rate": (total_conversions / total_clicks * 100) if total_clicks else 0,
+        "top_links": top_links,
+    }
+"""
+Background tasks for affiliate data synchronization.
+"""
+
+import logging
+from datetime import datetime, timedelta
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from app.core.celery_app import celery_app
+from app.core.database import async_session
+from app.models.affiliate import AffiliateLink, AffiliateClick, AffiliateConversion
+from app.services.affiliate_network import AwinClient, ImpactClient
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task
+def sync_affiliate_conversions_from_networks():
+    """
+    Periodically fetch conversion data from affiliate networks and update our records.
+    This is a placeholder; actual implementation depends on network APIs.
+    """
+    logger.info("Starting affiliate conversion sync")
+    # This would call network APIs and update conversion records.
+    pass
+
+
+@celery_app.task
+def clean_old_clicks():
+    """
+    Delete or anonymize click data older than 2 years (GDPR).
+    """
+    cutoff = datetime.utcnow() - timedelta(days=730)
+    # In production, you'd implement a soft delete or anonymization
+    logger.info(f"Cleaning affiliate clicks before {cutoff}")
+    # async with async_session() as db:
+    #     await db.execute(delete(AffiliateClick).where(AffiliateClick.created_at < cutoff))
+    #     await db.commit()
+"""
+Unit tests for affiliate recommendation engine.
+"""
+
+import pytest
+from datetime import datetime
+from uuid import uuid4
+from decimal import Decimal
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.affiliate import AffiliatePartner, AffiliateLink
+from app.schemas.affiliate import RecommendationContext
+from app.services.recommendation_engine import AffiliateRecommendationEngine
+
+
+@pytest.fixture
+async def sample_partner(db: AsyncSession) -> AffiliatePartner:
+    partner = AffiliatePartner(
+        id=uuid4(),
+        name="Test Partner",
+        network="direct",
+        commission_rate=Decimal("5.0"),
+        cookie_days=30,
+        active=True,
+    )
+    db.add(partner)
+    await db.commit()
+    await db.refresh(partner)
+    return partner
+
+
+@pytest.fixture
+async def sample_links(db: AsyncSession, sample_partner: AffiliatePartner) -> list[AffiliateLink]:
+    links = []
+    # Banking link
+    link1 = AffiliateLink(
+        id=uuid4(),
+        partner_id=sample_partner.id,
+        category="banking",
+        product_name="Student Bank Account",
+        description="Get £100 cashback",
+        destination_url="https://bank.example",
+        priority=5,
+        active=True,
+        targeting_rules={"universities": ["oxford"], "subjects": ["economics"]},
+    )
+    links.append(link1)
+
+    # Accommodation link
+    link2 = AffiliateLink(
+        id=uuid4(),
+        partner_id=sample_partner.id,
+        category="accommodation",
+        product_name="Student Halls",
+        description="Book now",
+        destination_url="https://accommodation.example",
+        priority=8,
+        active=True,
+        targeting_rules={"regions": ["london"]},
+    )
+    links.append(link2)
+
+    # Textbook link (no targeting)
+    link3 = AffiliateLink(
+        id=uuid4(),
+        partner_id=sample_partner.id,
+        category="textbooks",
+        product_name="All textbooks",
+        description="Save 10%",
+        destination_url="https://books.example",
+        priority=3,
+        active=True,
+        targeting_rules={},
+    )
+    links.append(link3)
+
+    for link in links:
+        db.add(link)
+    await db.commit()
+    for link in links:
+        await db.refresh(link)
+    return links
+
+
+@pytest.mark.asyncio
+async def test_recommendations_with_context(db: AsyncSession, sample_links):
+    engine = AffiliateRecommendationEngine(db)
+    context = RecommendationContext(
+        university_slug="oxford",
+        subject_slug="economics",
+        region="south_east",
+        limit=5,
+    )
+    recs = await engine.get_recommendations(context)
+
+    # Should return all 3 because they are eligible, but order matters
+    assert len(recs) == 3
+
+    # Banking should be top due to exact subject/university match (priority 5 + boost)
+    assert recs[0].category == "banking"
+
+    # Accommodation second (priority 8 + region boost but no exact)
+    assert recs[1].category == "accommodation"
+
+    # Textbooks last (priority 3)
+    assert recs[2].category == "textbooks"
+
+
+@pytest.mark.asyncio
+async def test_recommendations_exclude_university(db: AsyncSession, sample_links, sample_partner):
+    # Add a link that excludes oxford
+    link = AffiliateLink(
+        id=uuid4(),
+        partner_id=sample_partner.id,
+        category="insurance",
+        product_name="Travel insurance",
+        destination_url="https://insurance.example",
+        priority=5,
+        active=True,
+        targeting_rules={"exclude_universities": ["oxford"]},
+    )
+    db.add(link)
+    await db.commit()
+
+    engine = AffiliateRecommendationEngine(db)
+    context = RecommendationContext(university_slug="oxford", limit=10)
+    recs = await engine.get_recommendations(context)
+
+    # Should not include insurance link
+    assert len(recs) == 3  # only the original three
+    for r in recs:
+        assert r.category != "insurance"
+
+
+@pytest.mark.asyncio
+async def test_score_calculation(db: AsyncSession, sample_links):
+    engine = AffiliateRecommendationEngine(db)
+    link = sample_links[0]  # banking link
+
+    # Without context
+    score = engine._calculate_score(link, RecommendationContext())
+    assert score == 5.0  # base priority
+
+    # With matching subject
+    context = RecommendationContext(subject_slug="economics")
+    score = engine._calculate_score(link, context)
+    assert score > 5.0
+
+    # With matching university
+    context = RecommendationContext(university_slug="oxford")
+    score = engine._calculate_score(link, context)
+    assert score > 5.0
+import React, { useEffect, useState } from 'react';
+import { useAffiliateRecommendations } from '../hooks/useAffiliateRecommendations';
+import { AffiliateCard } from './AffiliateCard';
+import { RecommendedProduct } from '../lib/types';
+
+interface AffiliateRecommendationProps {
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: string;
+  region?: string;
+  limit?: number;
+  title?: string;
+  className?: string;
+}
+
+export const AffiliateRecommendation: React.FC<AffiliateRecommendationProps> = ({
+  universitySlug,
+  subjectSlug,
+  degreeLevel,
+  region,
+  limit = 5,
+  title = 'Recommended for you',
+  className = '',
+}) => {
+  const { recommendations, loading, error, trackClick } = useAffiliateRecommendations({
+    universitySlug,
+    subjectSlug,
+    degreeLevel,
+    region,
+    limit,
+  });
+
+  if (error) {
+    console.error('Affiliate recommendations error:', error);
+    return null; // fail silently
+  }
+
+  if (loading && recommendations.length === 0) {
+    return (
+      <div className={`bg-mint/10 rounded-xl p-6 animate-pulse ${className}`}>
+        <div className="h-6 bg-soft-grey rounded w-1/3 mb-4"></div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="bg-white rounded-lg p-4 h-32"></div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (!recommendations.length) {
+    return null;
+  }
+
+  const handleClick = async (product: RecommendedProduct) => {
+    await trackClick(product.link_id, {
+      universitySlug,
+      subjectSlug,
+      degreeLevel,
+    });
+    // Open in new tab
+    window.open(product.destination_url, '_blank', 'noopener,noreferrer');
+  };
+
+  return (
+    <div className={`bg-mint/10 rounded-xl p-6 ${className}`}>
+      <h3 className="font-heading text-xl text-navy mb-4">{title}</h3>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {recommendations.map((product) => (
+          <AffiliateCard
+            key={product.link_id}
+            product={product}
+            onClick={() => handleClick(product)}
+          />
+        ))}
+      </div>
+      <p className="text-xs text-slate mt-4">
+        When you purchase through links on our site, we may earn an affiliate commission.
+      </p>
+    </div>
+  );
+};
+import React from 'react';
+import { RecommendedProduct } from '../lib/types';
+
+interface AffiliateCardProps {
+  product: RecommendedProduct;
+  onClick: () => void;
+}
+
+export const AffiliateCard: React.FC<AffiliateCardProps> = ({ product, onClick }) => {
+  const defaultImage = '/images/placeholder-product.svg';
+
+  return (
+    <div className="bg-white rounded-lg p-4 shadow-md hover:shadow-lg transition-shadow duration-300 flex flex-col">
+      {product.image_url && (
+        <div className="w-full h-32 bg-soft-grey/20 rounded-md mb-3 overflow-hidden">
+          <img
+            src={product.image_url}
+            alt={product.product_name}
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              (e.target as HTMLImageElement).src = defaultImage;
+            }}
+          />
+        </div>
+      )}
+      <h4 className="font-bold text-navy mb-1">{product.product_name}</h4>
+      {product.description && (
+        <p className="text-sm text-slate mb-2 line-clamp-2">{product.description}</p>
+      )}
+      {product.commission_display && (
+        <p className="text-xs text-turquoise font-semibold mb-3">{product.commission_display}</p>
+      )}
+      <button
+        onClick={onClick}
+        className="mt-auto text-turquoise hover:text-turquoise/80 font-medium flex items-center gap-1 text-sm transition-colors"
+      >
+        Check price <span>→</span>
+      </button>
+    </div>
+  );
+};
+import { useState, useEffect, useCallback } from 'react';
+import { RecommendedProduct } from '../lib/types';
+import { trackAffiliateClick } from '../lib/affiliateTracking';
+
+interface UseAffiliateRecommendationsParams {
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: string;
+  region?: string;
+  limit?: number;
+  autoFetch?: boolean;
+}
+
+export function useAffiliateRecommendations({
+  universitySlug,
+  subjectSlug,
+  degreeLevel,
+  region,
+  limit = 5,
+  autoFetch = true,
+}: UseAffiliateRecommendationsParams) {
+  const [recommendations, setRecommendations] = useState<RecommendedProduct[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const fetchRecommendations = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (universitySlug) params.append('university_slug', universitySlug);
+      if (subjectSlug) params.append('subject_slug', subjectSlug);
+      if (degreeLevel) params.append('degree_level', degreeLevel);
+      if (region) params.append('region', region);
+      params.append('limit', limit.toString());
+
+      const res = await fetch(`/api/affiliate/recommendations?${params.toString()}`);
+      if (!res.ok) throw new Error('Failed to fetch recommendations');
+      const data = await res.json();
+      setRecommendations(data);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('Unknown error'));
+    } finally {
+      setLoading(false);
+    }
+  }, [universitySlug, subjectSlug, degreeLevel, region, limit]);
+
+  const trackClick = async (
+    linkId: string,
+    context?: { universitySlug?: string; subjectSlug?: string; degreeLevel?: string }
+  ) => {
+    try {
+      await trackAffiliateClick(linkId, context);
+    } catch (err) {
+      console.error('Failed to track affiliate click', err);
+    }
+  };
+
+  useEffect(() => {
+    if (autoFetch) {
+      fetchRecommendations();
+    }
+  }, [autoFetch, fetchRecommendations]);
+
+  return {
+    recommendations,
+    loading,
+    error,
+    fetchRecommendations,
+    trackClick,
+  };
+}
+import { v4 as uuidv4 } from 'uuid';
+
+interface ClickTrackingParams {
+  linkId: string;
+  universitySlug?: string;
+  subjectSlug?: string;
+  degreeLevel?: string;
+  pageUrl?: string;
+}
+
+export async function trackAffiliateClick(
+  linkId: string,
+  context?: {
+    universitySlug?: string;
+    subjectSlug?: string;
+    degreeLevel?: string;
+  }
+): Promise<{ clickId: string; redirectUrl: string }> {
+  const payload = {
+    link_id: linkId,
+    university_slug: context?.universitySlug,
+    subject_slug: context?.subjectSlug,
+    degree_level: context?.degreeLevel,
+    page_url: window.location.href,
+  };
+
+  const response = await fetch('/api/affiliate/click', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to track click');
+  }
+
+  const data = await response.json();
+  return {
+    clickId: data.click_id,
+    redirectUrl: data.redirect_url,
+  };
+}
+
+// Optional: generate a session ID for anonymous tracking
+export function getOrCreateSessionId(): string {
+  let sessionId = sessionStorage.getItem('affiliate_session_id');
+  if (!sessionId) {
+    sessionId = uuidv4();
+    sessionStorage.setItem('affiliate_session_id', sessionId);
+  }
+  return sessionId;
+}
+export interface RecommendedProduct {
+  link_id: string;
+  product_name: string;
+  description?: string;
+  category: string;
+  image_url?: string;
+  destination_url: string;
+  partner_name: string;
+  commission_display?: string;
+  priority: number;
+}
+// If using Next.js API routes as a proxy to FastAPI backend
+import { NextApiRequest, NextApiResponse } from 'next';
+import httpProxy from 'http-proxy';
+
+const proxy = httpProxy.createProxyServer();
+export const config = { api: { bodyParser: false } };
+
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  return new Promise((resolve, reject) => {
+    const target = process.env.API_URL || 'http://localhost:8000';
+    req.url = req.url?.replace(/^\/api\/affiliate/, '/affiliate');
+    proxy.web(req, res, { target, changeOrigin: true }, (err) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(true);
+      }
+    });
+  });
+}
+# file: backend/app/db.py
+from typing import AsyncGenerator
+import os
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/ediguide")
+
+# Async engine & session
+engine: AsyncEngine = create_async_engine(DATABASE_URL, future=True, echo=False, pool_pre_ping=True)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with AsyncSessionLocal() as session:
+        yield session
+# file: backend/app/models.py
+import enum
+import uuid
+from sqlalchemy import (
+    Column, String, Integer, DateTime, Boolean, ForeignKey, Numeric, Enum, Text, func
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB, INET
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
+
+Base = declarative_base()
+
+class AffiliateNetworkEnum(str, enum.Enum):
+    awin = "awin"
+    impact = "impact"
+    direct = "direct"
+
+class Affiliate(Base):
+    __tablename__ = "affiliates"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    network = Column(Enum(AffiliateNetworkEnum), nullable=False)
+    network_id = Column(String(255), nullable=True)  # network-specific ID
+    commission_rate = Column(Numeric(5,2), default=0.0)  # fraction e.g. 5.00 = 5%
+    cookie_days = Column(Integer, default=30)
+    base_url = Column(Text)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    links = relationship("AffiliateLink", back_populates="affiliate")
+
+class AffiliateLink(Base):
+    __tablename__ = "affiliate_links"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    affiliate_id = Column(UUID(as_uuid=True), ForeignKey("affiliates.id", ondelete="CASCADE"), nullable=False)
+    category = Column(String(100))
+    product_name = Column(String(255))
+    destination_url = Column(Text)
+    tracking_param = Column(String(255))
+    click_count = Column(Integer, default=0)
+    conversion_count = Column(Integer, default=0)
+    revenue_generated = Column(Numeric(12,2), default=0.0)
+    active = Column(Boolean, default=True)
+
+    affiliate = relationship("Affiliate", back_populates="links")
+
+class AffiliateClick(Base):
+    __tablename__ = "affiliate_clicks"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    link_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_links.id"))
+    affiliate_id = Column(UUID(as_uuid=True), ForeignKey("affiliates.id"))
+    user_id = Column(UUID(as_uuid=True), nullable=True)
+    session_id = Column(String(255), nullable=True)
+    ip_address = Column(INET, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    referrer = Column(Text, nullable=True)
+    external_click_id = Column(String(255), nullable=True)  # e.g., awin clickref, impact irclickid
+    converted = Column(Boolean, default=False)
+    conversion_value = Column(Numeric(12,2), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class AffiliateConversion(Base):
+    __tablename__ = "affiliate_conversions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    link_id = Column(UUID(as_uuid=True), ForeignKey("affiliate_links.id"))
+    affiliate_id = Column(UUID(as_uuid=True), ForeignKey("affiliates.id"))
+    external_click_id = Column(String(255), nullable=True)
+    external_conversion_id = Column(String(255), nullable=True)  # id from network
+    conversion_value = Column(Numeric(12,2))
+    commission_amount = Column(Numeric(12,2))
+    reported_at = Column(DateTime(timezone=True))
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now())
+    raw_payload = Column(JSONB)
+
+class ConversionReport(Base):
+    __tablename__ = "conversion_reports"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    date = Column(DateTime(timezone=True), server_default=func.now())
+    partner_id = Column(UUID(as_uuid=True), nullable=True)
+    total_conversions = Column(Integer, default=0)
+    total_revenue = Column(Numeric(12,2), default=0.0)
+    payload = Column(JSONB)
+-- file: migrations/initial.sql
+-- run with: psql < migrations/initial.sql
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE TABLE affiliates (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name varchar(255) NOT NULL,
+    network varchar(50) NOT NULL,
+    network_id varchar(255),
+    commission_rate numeric(5,2) DEFAULT 0.0,
+    cookie_days int DEFAULT 30,
+    base_url text,
+    active boolean DEFAULT true,
+    created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE affiliate_links (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    affiliate_id uuid REFERENCES affiliates(id) ON DELETE CASCADE,
+    category varchar(100),
+    product_name varchar(255),
+    destination_url text,
+    tracking_param varchar(255),
+    click_count int DEFAULT 0,
+    conversion_count int DEFAULT 0,
+    revenue_generated numeric(12,2) DEFAULT 0.0,
+    active boolean DEFAULT true
+);
+
+CREATE TABLE affiliate_clicks (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    link_id uuid REFERENCES affiliate_links(id),
+    affiliate_id uuid REFERENCES affiliates(id),
+    user_id uuid,
+    session_id varchar(255),
+    ip_address inet,
+    user_agent text,
+    referrer text,
+    external_click_id varchar(255),
+    converted boolean DEFAULT false,
+    conversion_value numeric(12,2),
+    created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE affiliate_conversions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    link_id uuid REFERENCES affiliate_links(id),
+    affiliate_id uuid REFERENCES affiliates(id),
+    external_click_id varchar(255),
+    external_conversion_id varchar(255),
+    conversion_value numeric(12,2),
+    commission_amount numeric(12,2),
+    reported_at timestamptz,
+    fetched_at timestamptz DEFAULT now(),
+    raw_payload jsonb
+);
+
+CREATE TABLE conversion_reports (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    date timestamptz DEFAULT now(),
+    partner_id uuid,
+    total_conversions int DEFAULT 0,
+    total_revenue numeric(12,2) DEFAULT 0.0,
+    payload jsonb
+);
+# file: backend/app/services/affiliate_api_clients.py
+import os
+import asyncio
+from typing import List, Dict, Any, Optional
+import httpx
+from datetime import datetime, timezone
+
+# NOTE: these are minimal, mockable clients. Replace URLs/params with the real endpoints & auth per network docs.
+
+class AwinAPI:
+    """
+    Simple Awin client. Real Awin API uses OAuth + API keys and provides CSV / JSON reports.
+    See: https://www.awin.com/gb/help
+    """
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("AWIN_API_KEY")
+        self.base = os.getenv("AWIN_API_BASE", "https://api.awin.com")
+        self.timeout = 30
+
+    async def fetch_conversions(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        Fetch conversions between dates. Return list of dicts with at least:
+        { 'conversion_id', 'clickref', 'amount', 'reported_at', 'raw' }
+        """
+        # Example: Awin has reporting CSV endpoints; here we simulate fetching JSON for brevity.
+        url = f"{self.base}/reports/conversions"
+        params = {"startDate": start_date, "endDate": end_date}
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        results = []
+        for r in data.get("results", []):
+            results.append({
+                "conversion_id": r.get("conversionId") or r.get("id"),
+                "clickref": r.get("clickRef") or r.get("clickref"),
+                "amount": float(r.get("amount") or r.get("orderValue") or 0),
+                "reported_at": r.get("date") or r.get("reportedAt"),
+                "raw": r
+            })
+        return results
+
+class ImpactAPI:
+    """
+    Simple Impact client. Replace with real integration following Impact API docs.
+    """
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("IMPACT_API_KEY")
+        self.base = os.getenv("IMPACT_API_BASE", "https://api.impact.com")
+        self.timeout = 30
+
+    async def fetch_conversions(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        # Implementation mirrors Awin style
+        url = f"{self.base}/conversions"
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        params = {"start": start_date, "end": end_date}
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        out = []
+        for c in data.get("conversions", []):
+            out.append({
+                "conversion_id": c.get("id"),
+                "clickref": c.get("click_id") or c.get("irclickid"),
+                "amount": float(c.get("value") or c.get("amount") or 0),
+                "reported_at": c.get("reportedAt"),
+                "raw": c
+            })
+        return out
+
+class DirectPartnerAPI:
+    """For direct partners who POST server-to-server conversions."""
+    async def fetch_conversions(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        # Usually direct partners won't have an API — conversions will be received as webhooks.
+        return []
+# file: backend/app/services/affiliate_reporting.py
+from typing import List, Dict, Any, Optional
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime, timezone
+import logging
+
+from app.models import Affiliate, AffiliateLink, AffiliateClick, AffiliateConversion, ConversionReport
+from app.services.affiliate_api_clients import AwinAPI, ImpactAPI, DirectPartnerAPI
+
+logger = logging.getLogger("affiliate_reporting")
+logger.setLevel(logging.INFO)
+
+def quantize_money(value: float) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+class AffiliateReportingService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.awin = AwinAPI()
+        self.impact = ImpactAPI()
+        self.direct = DirectPartnerAPI()
+
+    async def fetch_and_process(self, start_date: str, end_date: str) -> Dict[str, Any]:
+        """
+        Run full sync: fetch conversions from networks, reconcile with internal data,
+        store conversions, compute commissions, and return summary.
+        """
+        results_summary = {"fetched": 0, "saved": 0, "matched_clicks": 0, "total_commission": 0.0, "errors": []}
+
+        network_calls = [
+            ("awin", self.awin.fetch_conversions),
+            ("impact", self.impact.fetch_conversions),
+        ]
+        for network_name, fn in network_calls:
+            try:
+                logger.info("Fetching conversions from %s %s->%s", network_name, start_date, end_date)
+                rows = await fn(start_date, end_date)
+                results_summary["fetched"] += len(rows)
+                for row in rows:
+                    try:
+                        await self._process_row(row, network_name)
+                        results_summary["saved"] += 1
+                    except Exception as e:
+                        logger.exception("Error processing row: %s", e)
+                        results_summary["errors"].append({"row": row, "error": str(e)})
+            except Exception as ex:
+                logger.exception("Network fetch failed for %s: %s", network_name, ex)
+                results_summary["errors"].append({"network": network_name, "error": str(ex)})
+
+        # Build report rollup
+        report = await self._generate_report(start_date, end_date)
+        results_summary["report"] = report
+        return results_summary
+
+    async def _process_row(self, row: Dict[str, Any], network: str):
+        """
+        row contains: conversion_id, clickref, amount, reported_at, raw
+        """
+        clickref = row.get("clickref")
+        conversion_id = row.get("conversion_id")
+        amount = quantize_money(row.get("amount", 0.0))
+        reported_at_raw = row.get("reported_at")
+        reported_at = None
+        if reported_at_raw:
+            try:
+                reported_at = datetime.fromisoformat(reported_at_raw)
+            except Exception:
+                try:
+                    reported_at = datetime.strptime(reported_at_raw, "%Y-%m-%dT%H:%M:%S")
+                except Exception:
+                    reported_at = datetime.now(timezone.utc)
+
+        # Find affiliate click by external clickref OR by matching other heuristics (best effort)
+        stmt = select(AffiliateClick).where(AffiliateClick.external_click_id == clickref).limit(1)
+        click = (await self.session.execute(stmt)).scalars().first()
+
+        # If we cannot find matching click, leave click_id null but still store conversion
+        affiliate_id = None
+        link_id = None
+        commission_amount = Decimal("0.00")
+        commission_rate = Decimal("0.00")
+
+        if click:
+            affiliate_id = click.affiliate_id
+            link_id = click.link_id
+            # Load affiliate to get commission_rate
+            stmt2 = select(Affiliate).where(Affiliate.id == click.affiliate_id).limit(1)
+            affiliate = (await self.session.execute(stmt2)).scalars().first()
+            if affiliate and affiliate.commission_rate:
+                commission_rate = Decimal(str(affiliate.commission_rate)) / Decimal("100")
+                commission_amount = (Decimal(amount) * commission_rate).quantize(Decimal("0.01"))
+            # mark click converted
+            await self.session.execute(
+                update(AffiliateClick).where(AffiliateClick.id == click.id).values(
+                    converted=True,
+                    conversion_value=amount
+                )
+            )
+        else:
+            # Try to match by other hints in raw payload (e.g., reference tags)
+            # For now, we store as unmatched conversion.
+            logger.info("No click match for clickref=%s; saving unmatched conversion", clickref)
+
+        # Avoid duplication: only insert conversion if external_conversion_id not present
+        stmt_check = select(AffiliateConversion).where(AffiliateConversion.external_conversion_id == conversion_id).limit(1)
+        exists = (await self.session.execute(stmt_check)).scalars().first()
+        if exists:
+            logger.info("Conversion %s already exists; skipping", conversion_id)
+            return
+
+        conv = AffiliateConversion(
+            link_id=link_id,
+            affiliate_id=affiliate_id,
+            external_click_id=clickref,
+            external_conversion_id=conversion_id,
+            conversion_value=amount,
+            commission_amount=commission_amount,
+            reported_at=reported_at,
+            raw_payload=row.get("raw")
+        )
+        self.session.add(conv)
+        await self.session.commit()
+
+    async def _generate_report(self, start_date: str, end_date: str) -> Dict[str, Any]:
+        """
+        Summarise conversions between start_date and end_date.
+        """
+        stmt = """
+        SELECT
+            COUNT(*) as total_conversions,
+            COALESCE(SUM(commission_amount), 0) as total_commission
+        FROM affiliate_conversions
+        WHERE fetched_at BETWEEN :start AND :end
+        """
+        res = await self.session.execute(stmt, {"start": start_date + "T00:00:00+00:00", "end": end_date + "T23:59:59+00:00"})
+        row = res.first()
+        total_conversions = int(row[0] or 0)
+        total_commission = float(row[1] or 0.0)
+
+        # persist a rollup row
+        report = ConversionReport(
+            partner_id=None,
+            total_conversions=total_conversions,
+            total_revenue=total_commission,
+            payload={"range": [start_date, end_date]}
+        )
+        self.session.add(report)
+        await self.session.commit()
+
+        return {"total_conversions": total_conversions, "total_commission": total_commission}
+# file: backend/app/routers/affiliate_reporting.py
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from datetime import date
+from typing import Optional, List, Dict
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_db
+from app.services.affiliate_reporting import AffiliateReportingService
+from app.models import AffiliateConversion
+
+router = APIRouter(prefix="/admin/affiliate", tags=["affiliate-admin"])
+
+class FetchRequest(BaseModel):
+    start_date: date = Field(...)
+    end_date: date = Field(...)
+    networks: Optional[List[str]] = None  # ["awin","impact"]
+
+@router.post("/fetch")
+async def fetch_conversions(payload: FetchRequest, db: AsyncSession = Depends(get_db)):
+    svc = AffiliateReportingService(db)
+    result = await svc.fetch_and_process(payload.start_date.isoformat(), payload.end_date.isoformat())
+    return {"success": True, "detail": result}
+
+@router.get("/conversions")
+async def list_conversions(limit: int = 100, offset: int = 0, db: AsyncSession = Depends(get_db)):
+    stmt = await db.execute(
+        "SELECT id, affiliate_id, external_conversion_id, external_click_id, conversion_value, commission_amount, reported_at, fetched_at FROM affiliate_conversions ORDER BY fetched_at DESC LIMIT :limit OFFSET :offset",
+        {"limit": limit, "offset": offset}
+    )
+    rows = [dict(r) for r in stmt.fetchall()]
+    return {"count": len(rows), "rows": rows}
+
+@router.get("/reports")
+async def list_reports(limit: int = 50, db: AsyncSession = Depends(get_db)):
+    stmt = await db.execute(
+        "SELECT id, date, total_conversions, total_revenue FROM conversion_reports ORDER BY date DESC LIMIT :limit",
+        {"limit": limit}
+    )
+    rows = [dict(r) for r in stmt.fetchall()]
+    return {"count": len(rows), "rows": rows}
+# file: backend/app/main.py
+import uvicorn
+from fastapi import FastAPI
+from app.routers import affiliate_reporting
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="Ediguide Affiliate Reporting", version="0.1")
+    app.include_router(affiliate_reporting.router)
+    return app
+
+app = create_app()
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+# file: backend/scripts/fetch_affiliate_conversions.py
+"""
+Simple CLI to run the fetch job for a given date range.
+Usage:
+    python scripts/fetch_affiliate_conversions.py 2026-02-01 2026-02-28
+"""
+import sys
+import asyncio
+from datetime import date, timedelta
+import os
+
+from app.db import AsyncSessionLocal
+from app.services.affiliate_reporting import AffiliateReportingService
+
+async def main(start_date: str, end_date: str):
+    async with AsyncSessionLocal() as session:
+        svc = AffiliateReportingService(session)
+        result = await svc.fetch_and_process(start_date, end_date)
+        print("RESULT:", result)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Usage: python fetch_affiliate_conversions.py YYYY-MM-DD YYYY-MM-DD")
+        sys.exit(2)
+    start = sys.argv[1]
+    end = sys.argv[2]
+    asyncio.run(main(start, end))
+# file: backend/README.md
+
+Ediguide — Module 32: Affiliate Conversion Reporting
+---------------------------------------------------
+
+Files:
+- app/db.py
+- app/models.py
+- app/services/affiliate_api_clients.py
+- app/services/affiliate_reporting.py
+- app/routers/affiliate_reporting.py
+- app/main.py
+- scripts/fetch_affiliate_conversions.py
+- migrations/initial.sql
+
+Requirements:
+- Python 3.10+
+- PostgreSQL (with pgcrypto extension)
+- pip packages: fastapi, uvicorn, sqlalchemy[asyncio], asyncpg, httpx, pydantic
+
+Install:
+
+DB setup:
+- Create DB and run `migrations/initial.sql`.
+- Set env var `DATABASE_URL` (e.g., postgresql+asyncpg://user:pass@host:5432/dbname).
+
+Environment:
+- AWIN_API_KEY, AWIN_API_BASE (optional)
+- IMPACT_API_KEY, IMPACT_API_BASE (optional)
+
+Run server:
+
+Run fetch:
+
+Notes:
+- The Awin/Impact clients are placeholders. Replace with real endpoints and implement auth, pagination and CSV parsers as per the networks' docs.
+- Ensure GDPR & PECR compliance. Do not send personal data to networks without consent.

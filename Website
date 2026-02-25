@@ -28963,3 +28963,1262 @@ Run fetch:
 Notes:
 - The Awin/Impact clients are placeholders. Replace with real endpoints and implement auth, pagination and CSV parsers as per the networks' docs.
 - Ensure GDPR & PECR compliance. Do not send personal data to networks without consent.
+-- migrations/20250225_create_sponsored_tables.sql
+
+-- Partners (universities or companies buying sponsored placements)
+CREATE TABLE partners (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    type VARCHAR(50) CHECK (type IN ('university', 'company', 'other')),
+    contact_email VARCHAR(255),
+    contact_phone VARCHAR(50),
+    logo_url TEXT,
+    website TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Sponsored placements (badges, cards, etc.)
+CREATE TABLE sponsored_placements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    partner_id UUID NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+    placement_type VARCHAR(50) NOT NULL, -- 'hero', 'sidebar', 'ranking_badge', 'spotlight'
+    page_location VARCHAR(100) NOT NULL,  -- 'homepage', 'university_profile', 'rankings', 'subject_page'
+    university_slug VARCHAR(100),          -- if tied to a specific university (optional)
+    subject_slug VARCHAR(100),             -- if tied to a specific subject (optional)
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    image_url TEXT,
+    link_url TEXT NOT NULL,
+    priority INTEGER DEFAULT 5 CHECK (priority BETWEEN 1 AND 10), -- 1 = highest
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    active BOOLEAN DEFAULT true,
+    impressions INTEGER DEFAULT 0,
+    clicks INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Sponsored articles (long‑form advertorials)
+CREATE TABLE sponsored_articles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    partner_id UUID NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+    title VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    excerpt TEXT,
+    content TEXT NOT NULL,
+    featured_image TEXT,
+    published_at TIMESTAMP WITH TIME ZONE,
+    views INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Optional: track impressions/clicks per user/session (for detailed analytics)
+CREATE TABLE sponsored_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    placement_id UUID REFERENCES sponsored_placements(id) ON DELETE SET NULL,
+    article_id UUID REFERENCES sponsored_articles(id) ON DELETE SET NULL,
+    event_type VARCHAR(20) NOT NULL, -- 'impression', 'click'
+    user_id UUID,                    -- if logged in
+    session_id VARCHAR(255),
+    page_url TEXT,
+    ip_address INET,
+    user_agent TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Indexes for performance
+CREATE INDEX idx_sponsored_placements_page ON sponsored_placements(page_location, university_slug, subject_slug);
+CREATE INDEX idx_sponsored_placements_dates ON sponsored_placements(start_date, end_date);
+CREATE INDEX idx_sponsored_articles_slug ON sponsored_articles(slug);
+CREATE INDEX idx_sponsored_events_placement ON sponsored_events(placement_id);
+# app/models/sponsored.py
+
+from pydantic import BaseModel, Field, validator
+from datetime import date, datetime
+from typing import Optional, List
+from uuid import UUID
+
+class PartnerBase(BaseModel):
+    name: str
+    type: str
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    logo_url: Optional[str] = None
+    website: Optional[str] = None
+
+class PartnerCreate(PartnerBase):
+    pass
+
+class Partner(PartnerBase):
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class SponsoredPlacementBase(BaseModel):
+    partner_id: UUID
+    placement_type: str
+    page_location: str
+    university_slug: Optional[str] = None
+    subject_slug: Optional[str] = None
+    title: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    link_url: str
+    priority: int = 5
+    start_date: date
+    end_date: date
+    active: bool = True
+
+    @validator('end_date')
+    def end_date_after_start(cls, v, values):
+        if 'start_date' in values and v < values['start_date']:
+            raise ValueError('end_date must be after start_date')
+        return v
+
+class SponsoredPlacementCreate(SponsoredPlacementBase):
+    pass
+
+class SponsoredPlacementUpdate(BaseModel):
+    partner_id: Optional[UUID] = None
+    placement_type: Optional[str] = None
+    page_location: Optional[str] = None
+    university_slug: Optional[str] = None
+    subject_slug: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    link_url: Optional[str] = None
+    priority: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    active: Optional[bool] = None
+
+class SponsoredPlacement(SponsoredPlacementBase):
+    id: UUID
+    impressions: int
+    clicks: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class SponsoredArticleBase(BaseModel):
+    partner_id: UUID
+    title: str
+    slug: str
+    excerpt: Optional[str] = None
+    content: str
+    featured_image: Optional[str] = None
+    published_at: Optional[datetime] = None
+
+class SponsoredArticleCreate(SponsoredArticleBase):
+    pass
+
+class SponsoredArticleUpdate(BaseModel):
+    partner_id: Optional[UUID] = None
+    title: Optional[str] = None
+    slug: Optional[str] = None
+    excerpt: Optional[str] = None
+    content: Optional[str] = None
+    featured_image: Optional[str] = None
+    published_at: Optional[datetime] = None
+
+class SponsoredArticle(SponsoredArticleBase):
+    id: UUID
+    views: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class SponsoredEventCreate(BaseModel):
+    placement_id: Optional[UUID] = None
+    article_id: Optional[UUID] = None
+    event_type: str
+    page_url: Optional[str] = None
+# app/db/sponsored.py
+
+import asyncpg
+from datetime import date
+from typing import Optional, List
+from uuid import UUID
+
+class SponsoredRepository:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def get_active_placements(
+        self,
+        page_location: str,
+        university_slug: Optional[str] = None,
+        subject_slug: Optional[str] = None,
+        limit: int = 10
+    ) -> List[dict]:
+        query = """
+            SELECT *
+            FROM sponsored_placements
+            WHERE page_location = $1
+              AND active = true
+              AND start_date <= CURRENT_DATE
+              AND end_date >= CURRENT_DATE
+              AND (
+                    ($2::text IS NULL AND university_slug IS NULL)
+                    OR university_slug = $2
+                    OR university_slug IS NULL
+              )
+              AND (
+                    ($3::text IS NULL AND subject_slug IS NULL)
+                    OR subject_slug = $3
+                    OR subject_slug IS NULL
+              )
+            ORDER BY priority ASC, created_at DESC
+            LIMIT $4
+        """
+        rows = await self.conn.fetch(query, page_location, university_slug, subject_slug, limit)
+        return [dict(r) for r in rows]
+
+    async def increment_impression(self, placement_id: UUID):
+        await self.conn.execute(
+            "UPDATE sponsored_placements SET impressions = impressions + 1 WHERE id = $1",
+            placement_id
+        )
+
+    async def increment_click(self, placement_id: UUID):
+        await self.conn.execute(
+            "UPDATE sponsored_placements SET clicks = clicks + 1 WHERE id = $1",
+            placement_id
+        )
+
+    async def create_placement(self, data: dict) -> UUID:
+        record = await self.conn.fetchrow(
+            """
+            INSERT INTO sponsored_placements (
+                partner_id, placement_type, page_location, university_slug,
+                subject_slug, title, description, image_url, link_url,
+                priority, start_date, end_date, active
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING id
+            """,
+            data['partner_id'], data['placement_type'], data['page_location'],
+            data.get('university_slug'), data.get('subject_slug'),
+            data['title'], data.get('description'), data.get('image_url'),
+            data['link_url'], data['priority'], data['start_date'],
+            data['end_date'], data['active']
+        )
+        return record['id']
+
+    async def update_placement(self, placement_id: UUID, data: dict):
+        sets = []
+        values = []
+        for key, val in data.items():
+            if val is not None:
+                sets.append(f"{key} = ${len(values)+2}")
+                values.append(val)
+        if not sets:
+            return
+        values.append(placement_id)
+        query = f"UPDATE sponsored_placements SET {', '.join(sets)} WHERE id = ${len(values)}"
+        await self.conn.execute(query, *values)
+
+    async def delete_placement(self, placement_id: UUID):
+        await self.conn.execute("DELETE FROM sponsored_placements WHERE id = $1", placement_id)
+
+    # Similar methods for articles and events...
+# app/routes/sponsored.py
+
+from fastapi import APIRouter, HTTPException, Request, Depends
+from app.models.sponsored import (
+    SponsoredPlacementCreate, SponsoredPlacementUpdate,
+    SponsoredArticleCreate, SponsoredArticleUpdate,
+    SponsoredEventCreate
+)
+from app.db.sponsored import SponsoredRepository
+from app.db.partners import PartnersRepository  # assume exists
+from app.dependencies import get_db_conn, get_current_admin_user
+import asyncpg
+from typing import Optional, List
+from uuid import UUID
+
+router = APIRouter(prefix="/api/sponsored", tags=["sponsored"])
+
+@router.get("/placements")
+async def get_placements(
+    page: str,
+    university: Optional[str] = None,
+    subject: Optional[str] = None,
+    limit: int = 10,
+    conn: asyncpg.Connection = Depends(get_db_conn)
+):
+    """Public endpoint to fetch active placements for a given page."""
+    repo = SponsoredRepository(conn)
+    placements = await repo.get_active_placements(page, university, subject, limit)
+    # Increment impressions asynchronously (fire and forget)
+    for p in placements:
+        await repo.increment_impression(p['id'])
+        # Also log event
+        await repo.log_event(SponsoredEventCreate(
+            placement_id=p['id'],
+            event_type='impression'
+        ))
+    return placements
+
+@router.post("/placements/{placement_id}/click")
+async def track_click(
+    placement_id: UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_db_conn)
+):
+    """Track a click on a placement."""
+    repo = SponsoredRepository(conn)
+    await repo.increment_click(placement_id)
+    await repo.log_event(SponsoredEventCreate(
+        placement_id=placement_id,
+        event_type='click',
+        page_url=request.headers.get('referer')
+    ))
+    return {"status": "ok"}
+
+# Admin endpoints (require authentication)
+@router.post("/admin/placements", dependencies=[Depends(get_current_admin_user)])
+async def create_placement(
+    placement: SponsoredPlacementCreate,
+    conn: asyncpg.Connection = Depends(get_db_conn)
+):
+    repo = SponsoredRepository(conn)
+    try:
+        placement_id = await repo.create_placement(placement.dict())
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return {"id": placement_id}
+
+@router.put("/admin/placements/{placement_id}", dependencies=[Depends(get_current_admin_user)])
+async def update_placement(
+    placement_id: UUID,
+    updates: SponsoredPlacementUpdate,
+    conn: asyncpg.Connection = Depends(get_db_conn)
+):
+    repo = SponsoredRepository(conn)
+    await repo.update_placement(placement_id, updates.dict(exclude_unset=True))
+    return {"status": "updated"}
+
+@router.delete("/admin/placements/{placement_id}", dependencies=[Depends(get_current_admin_user)])
+async def delete_placement(placement_id: UUID, conn: asyncpg.Connection = Depends(get_db_conn)):
+    repo = SponsoredRepository(conn)
+    await repo.delete_placement(placement_id)
+    return {"status": "deleted"}
+
+# Similar CRUD for articles and partners
+// types/sponsored.ts
+
+export interface Partner {
+  id: string;
+  name: string;
+  logo_url?: string;
+  website?: string;
+}
+
+export interface SponsoredPlacement {
+  id: string;
+  partner_id: string;
+  partner?: Partner;
+  placement_type: 'hero' | 'sidebar' | 'ranking_badge' | 'spotlight';
+  page_location: string;
+  university_slug?: string;
+  subject_slug?: string;
+  title: string;
+  description?: string;
+  image_url?: string;
+  link_url: string;
+  priority: number;
+  start_date: string;
+  end_date: string;
+  active: boolean;
+  impressions: number;
+  clicks: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SponsoredArticle {
+  id: string;
+  partner_id: string;
+  partner?: Partner;
+  title: string;
+  slug: string;
+  excerpt?: string;
+  content: string;
+  featured_image?: string;
+  published_at?: string;
+  views: number;
+}
+// lib/api/sponsored.ts
+
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL,
+});
+
+export const getPlacements = async (
+  page: string,
+  university?: string,
+  subject?: string,
+  limit = 10
+): Promise<SponsoredPlacement[]> => {
+  const { data } = await api.get('/sponsored/placements', {
+    params: { page, university, subject, limit },
+  });
+  return data;
+};
+
+export const trackClick = async (placementId: string) => {
+  await api.post(`/sponsored/placements/${placementId}/click`);
+};
+
+export const createPlacement = async (placement: Partial<SponsoredPlacement>) => {
+  const { data } = await api.post('/sponsored/admin/placements', placement);
+  return data;
+};
+
+// ... other admin methods
+// components/sponsored/SponsoredBadge.tsx
+
+import React from 'react';
+import { SponsoredPlacement } from '@/types/sponsored';
+
+interface Props {
+  placement: SponsoredPlacement;
+  className?: string;
+}
+
+const SponsoredBadge: React.FC<Props> = ({ placement, className = '' }) => {
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-medium text-slate bg-soft-grey px-2 py-1 rounded-full ${className}`}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+      </svg>
+      Sponsored
+    </span>
+  );
+};
+
+export default SponsoredBadge;
+// components/sponsored/SponsoredSpotlight.tsx
+
+import React from 'react';
+import Image from 'next/image';
+import Link from 'next/link';
+import { SponsoredPlacement } from '@/types/sponsored';
+import { trackClick } from '@/lib/api/sponsored';
+import SponsoredBadge from './SponsoredBadge';
+
+interface Props {
+  placement: SponsoredPlacement;
+  variant?: 'card' | 'hero' | 'sidebar';
+}
+
+const SponsoredSpotlight: React.FC<Props> = ({ placement, variant = 'card' }) => {
+  const handleClick = async () => {
+    try {
+      await trackClick(placement.id);
+    } catch (err) {
+      console.error('Failed to track click', err);
+    }
+  };
+
+  if (variant === 'hero') {
+    return (
+      <div className="relative rounded-xl overflow-hidden bg-gradient-to-r from-deep-navy to-midnight-teal text-white">
+        {placement.image_url && (
+          <div className="absolute inset-0 opacity-20">
+            <Image src={placement.image_url} alt="" fill className="object-cover" />
+          </div>
+        )}
+        <div className="relative p-8 md:p-12">
+          <SponsoredBadge placement={placement} className="mb-4 bg-white/20 text-white border-white/30" />
+          <h2 className="font-heading text-3xl md:text-4xl mb-4">{placement.title}</h2>
+          {placement.description && <p className="text-lg opacity-90 mb-6">{placement.description}</p>}
+          <Link
+            href={placement.link_url}
+            onClick={handleClick}
+            target="_blank"
+            rel="noopener sponsored"
+            className="inline-flex items-center gap-2 bg-tropical-turquoise text-deep-navy font-medium px-6 py-3 rounded-lg hover:bg-caribbean-cyan transition-colors"
+          >
+            Learn more
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path d="M7 17L17 7M17 7H7M17 7V17" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (variant === 'sidebar') {
+    return (
+      <div className="bg-white rounded-lg shadow-md p-4 border-l-4 border-tropical-turquoise">
+        <SponsoredBadge placement={placement} className="mb-2" />
+        <h3 className="font-heading text-xl mb-2">{placement.title}</h3>
+        {placement.description && <p className="text-sm text-slate mb-3">{placement.description}</p>}
+        <Link
+          href={placement.link_url}
+          onClick={handleClick}
+          target="_blank"
+          rel="noopener sponsored"
+          className="text-tropical-turquoise font-medium hover:underline inline-flex items-center gap-1"
+        >
+          Find out more
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M5 12h14M12 5l7 7-7 7" strokeWidth="2"/>
+          </svg>
+        </Link>
+      </div>
+    );
+  }
+
+  // default card variant
+  return (
+    <div className="bg-white rounded-xl shadow-md overflow-hidden hover:shadow-lg transition-shadow">
+      {placement.image_url && (
+        <div className="relative h-48 w-full">
+          <Image src={placement.image_url} alt={placement.title} fill className="object-cover" />
+        </div>
+      )}
+      <div className="p-5">
+        <SponsoredBadge placement={placement} className="mb-2" />
+        <h3 className="font-heading text-xl mb-2">{placement.title}</h3>
+        {placement.description && <p className="text-sm text-slate mb-4">{placement.description}</p>}
+        <Link
+          href={placement.link_url}
+          onClick={handleClick}
+          target="_blank"
+          rel="noopener sponsored"
+          className="text-tropical-turquoise font-medium hover:underline inline-flex items-center gap-1"
+        >
+          Visit site
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3" strokeWidth="2"/>
+          </svg>
+        </Link>
+      </div>
+    </div>
+  );
+};
+
+export default SponsoredSpotlight;
+// pages/index.tsx (partial)
+
+import { getPlacements } from '@/lib/api/sponsored';
+import SponsoredSpotlight from '@/components/sponsored/SponsoredSpotlight';
+import { GetServerSideProps } from 'next';
+
+export const getServerSideProps: GetServerSideProps = async () => {
+  const heroPlacements = await getPlacements('homepage', undefined, undefined, 1);
+  const sidebarPlacements = await getPlacements('homepage_sidebar', undefined, undefined, 3);
+  return {
+    props: {
+      heroPlacement: heroPlacements[0] || null,
+      sidebarPlacements,
+    },
+  };
+};
+
+export default function Home({ heroPlacement, sidebarPlacements }) {
+  return (
+    <div>
+      {heroPlacement && <SponsoredSpotlight placement={heroPlacement} variant="hero" />}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2">{/* main content */}</div>
+        <aside className="space-y-6">
+          {sidebarPlacements.map(p => (
+            <SponsoredSpotlight key={p.id} placement={p} variant="sidebar" />
+          ))}
+        </aside>
+      </div>
+    </div>
+  );
+}
+// pages/admin/sponsored/placements.tsx
+
+import { useState, useEffect } from 'react';
+import { SponsoredPlacement } from '@/types/sponsored';
+import { getPlacements, createPlacement, updatePlacement, deletePlacement } from '@/lib/api/sponsored';
+import AdminLayout from '@/components/admin/AdminLayout';
+import PlacementForm from '@/components/admin/sponsored/PlacementForm';
+import { toast } from 'react-hot-toast';
+
+export default function PlacementsAdmin() {
+  const [placements, setPlacements] = useState<SponsoredPlacement[]>([]);
+  const [editing, setEditing] = useState<SponsoredPlacement | null>(null);
+  const [showForm, setShowForm] = useState(false);
+
+  useEffect(() => {
+    loadPlacements();
+  }, []);
+
+  const loadPlacements = async () => {
+    // For admin, we need a different endpoint that returns all placements (active/inactive)
+    const { data } = await axios.get('/api/sponsored/admin/placements');
+    setPlacements(data);
+  };
+
+  const handleSave = async (placement: Partial<SponsoredPlacement>) => {
+    try {
+      if (editing) {
+        await updatePlacement(editing.id, placement);
+        toast.success('Placement updated');
+      } else {
+        await createPlacement(placement);
+        toast.success('Placement created');
+      }
+      setShowForm(false);
+      setEditing(null);
+      loadPlacements();
+    } catch (err) {
+      toast.error('Operation failed');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (confirm('Are you sure?')) {
+      await deletePlacement(id);
+      toast.success('Placement deleted');
+      loadPlacements();
+    }
+  };
+
+  return (
+    <AdminLayout>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="font-heading text-3xl">Sponsored Placements</h1>
+        <button
+          onClick={() => setShowForm(true)}
+          className="bg-tropical-turquoise text-white px-4 py-2 rounded-lg"
+        >
+          New Placement
+        </button>
+      </div>
+
+      {showForm && (
+        <PlacementForm
+          placement={editing}
+          onSave={handleSave}
+          onCancel={() => { setShowForm(false); setEditing(null); }}
+        />
+      )}
+
+      <table className="w-full bg-white rounded-xl shadow">
+        <thead className="bg-soft-grey">
+          <tr>
+            <th className="px-4 py-2 text-left">Title</th>
+            <th className="px-4 py-2 text-left">Page</th>
+            <th className="px-4 py-2 text-left">Type</th>
+            <th className="px-4 py-2 text-left">Dates</th>
+            <th className="px-4 py-2 text-left">Impressions</th>
+            <th className="px-4 py-2 text-left">Clicks</th>
+            <th className="px-4 py-2 text-left">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {placements.map(p => (
+            <tr key={p.id} className="border-t">
+              <td className="px-4 py-2">{p.title}</td>
+              <td className="px-4 py-2">{p.page_location}</td>
+              <td className="px-4 py-2">{p.placement_type}</td>
+              <td className="px-4 py-2">{p.start_date} – {p.end_date}</td>
+              <td className="px-4 py-2">{p.impressions}</td>
+              <td className="px-4 py-2">{p.clicks}</td>
+              <td className="px-4 py-2 space-x-2">
+                <button onClick={() => { setEditing(p); setShowForm(true); }} className="text-blue-600">Edit</button>
+                <button onClick={() => handleDelete(p.id)} className="text-red-600">Delete</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </AdminLayout>
+  );
+}
+// components/admin/sponsored/PlacementForm.tsx
+
+import React, { useState } from 'react';
+import { SponsoredPlacement } from '@/types/sponsored';
+
+interface Props {
+  placement?: SponsoredPlacement | null;
+  onSave: (data: Partial<SponsoredPlacement>) => void;
+  onCancel: () => void;
+}
+
+const PlacementForm: React.FC<Props> = ({ placement, onSave, onCancel }) => {
+  const [form, setForm] = useState<Partial<SponsoredPlacement>>(
+    placement || {
+      partner_id: '',
+      placement_type: 'spotlight',
+      page_location: '',
+      title: '',
+      description: '',
+      link_url: '',
+      priority: 5,
+      start_date: new Date().toISOString().split('T')[0],
+      end_date: new Date(Date.now() + 30*86400000).toISOString().split('T')[0],
+      active: true,
+    }
+  );
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSave(form);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="bg-white p-6 rounded-xl shadow mb-6">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">Partner ID</label>
+          <input
+            type="text"
+            name="partner_id"
+            value={form.partner_id || ''}
+            onChange={handleChange}
+            required
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Placement Type</label>
+          <select name="placement_type" value={form.placement_type} onChange={handleChange} className="w-full border rounded-lg p-2">
+            <option value="hero">Hero</option>
+            <option value="sidebar">Sidebar</option>
+            <option value="ranking_badge">Ranking Badge</option>
+            <option value="spotlight">Spotlight</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Page Location</label>
+          <input
+            type="text"
+            name="page_location"
+            value={form.page_location || ''}
+            onChange={handleChange}
+            required
+            className="w-full border rounded-lg p-2"
+            placeholder="homepage, university_profile, ..."
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">University Slug (optional)</label>
+          <input
+            type="text"
+            name="university_slug"
+            value={form.university_slug || ''}
+            onChange={handleChange}
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div className="col-span-2">
+          <label className="block text-sm font-medium mb-1">Title</label>
+          <input
+            type="text"
+            name="title"
+            value={form.title || ''}
+            onChange={handleChange}
+            required
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div className="col-span-2">
+          <label className="block text-sm font-medium mb-1">Description</label>
+          <textarea
+            name="description"
+            value={form.description || ''}
+            onChange={handleChange}
+            rows={3}
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div className="col-span-2">
+          <label className="block text-sm font-medium mb-1">Image URL</label>
+          <input
+            type="url"
+            name="image_url"
+            value={form.image_url || ''}
+            onChange={handleChange}
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div className="col-span-2">
+          <label className="block text-sm font-medium mb-1">Link URL</label>
+          <input
+            type="url"
+            name="link_url"
+            value={form.link_url || ''}
+            onChange={handleChange}
+            required
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Priority (1-10)</label>
+          <input
+            type="number"
+            name="priority"
+            min="1"
+            max="10"
+            value={form.priority || 5}
+            onChange={handleChange}
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Active</label>
+          <select name="active" value={form.active ? 'true' : 'false'} onChange={e => setForm({ ...form, active: e.target.value === 'true' })} className="w-full border rounded-lg p-2">
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Start Date</label>
+          <input
+            type="date"
+            name="start_date"
+            value={form.start_date || ''}
+            onChange={handleChange}
+            required
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">End Date</label>
+          <input
+            type="date"
+            name="end_date"
+            value={form.end_date || ''}
+            onChange={handleChange}
+            required
+            className="w-full border rounded-lg p-2"
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-3 mt-6">
+        <button type="button" onClick={onCancel} className="px-4 py-2 border rounded-lg">Cancel</button>
+        <button type="submit" className="px-4 py-2 bg-tropical-turquoise text-white rounded-lg">Save</button>
+      </div>
+    </form>
+  );
+};
+
+export default PlacementForm;
+# Module 34: Sponsored Content API Endpoint
+# File: backend/modules/sponsored/api.py
+# Description: High-quality, production-grade Sponsored Content Serving API
+# Endpoint: /api/sponsored/for-page
+# Stack: FastAPI + SQLAlchemy + PostgreSQL + Redis Cache
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, func
+from typing import List, Optional, Dict
+from datetime import datetime
+import hashlib
+import json
+import redis
+
+from backend.core.database import get_db
+from backend.core.config import settings
+from backend.core.security import verify_api_key
+from backend.core.logging import logger
+from backend.core.cache import get_redis
+from backend.models.sponsored import SponsoredPlacement, SponsoredArticle
+from backend.schemas.sponsored import SponsoredResponse, SponsoredPlacementOut
+
+router = APIRouter(prefix="/api/sponsored", tags=["Sponsored"])
+
+# -----------------------------
+# Utility Layer
+# -----------------------------
+
+def _hash_request(payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _now():
+    return datetime.utcnow()
+
+
+# -----------------------------
+# Core Business Logic
+# -----------------------------
+
+class SponsoredService:
+    """
+    Enterprise-grade sponsored content serving engine.
+    Handles targeting, scheduling, prioritisation, weighting,
+    caching, and impression logging.
+    """
+
+    def __init__(self, db: Session, cache: redis.Redis):
+        self.db = db
+        self.cache = cache
+
+    # -------------------------
+    # Query Builders
+    # -------------------------
+
+    def _base_placement_query(self):
+        return self.db.query(SponsoredPlacement).filter(
+            SponsoredPlacement.is_active == True,
+            SponsoredPlacement.start_date <= _now(),
+            SponsoredPlacement.end_date >= _now()
+        )
+
+    def _base_article_query(self):
+        return self.db.query(SponsoredArticle).filter(
+            SponsoredArticle.is_active == True,
+            SponsoredArticle.start_date <= _now(),
+            SponsoredArticle.end_date >= _now()
+        )
+
+    # -------------------------
+    # Targeting Engine
+    # -------------------------
+
+    def apply_targeting(self, query, page: str, university: Optional[str], subject: Optional[str], region: Optional[str]):
+        conditions = []
+
+        conditions.append(or_(SponsoredPlacement.target_page == page,
+                              SponsoredPlacement.target_page == "all"))
+
+        if university:
+            conditions.append(or_(SponsoredPlacement.target_university == university,
+                                  SponsoredPlacement.target_university == "all"))
+
+        if subject:
+            conditions.append(or_(SponsoredPlacement.target_subject == subject,
+                                  SponsoredPlacement.target_subject == "all"))
+
+        if region:
+            conditions.append(or_(SponsoredPlacement.target_region == region,
+                                  SponsoredPlacement.target_region == "all"))
+
+        return query.filter(and_(*conditions))
+
+    # -------------------------
+    # Weighting + Priority
+    # -------------------------
+
+    def rank_placements(self, placements: List[SponsoredPlacement]) -> List[SponsoredPlacement]:
+        """
+        Ranking formula:
+        Score = (priority * 3) + bid_weight + recency_bonus + engagement_score
+        """
+        ranked = []
+        now = _now()
+
+        for p in placements:
+            recency_days = max((now - p.start_date).days, 1)
+            recency_bonus = 1 / recency_days
+            engagement_score = (p.clicks + 1) / (p.impressions + 1)
+            score = (p.priority * 3) + p.bid_weight + recency_bonus + engagement_score
+            ranked.append((score, p))
+
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        return [p for _, p in ranked]
+
+    # -------------------------
+    # Cache Layer
+    # -------------------------
+
+    def get_cached(self, key: str):
+        if not self.cache:
+            return None
+        raw = self.cache.get(key)
+        if raw:
+            return json.loads(raw)
+        return None
+
+    def set_cached(self, key: str, data: dict, ttl: int = 300):
+        if not self.cache:
+            return
+        self.cache.setex(key, ttl, json.dumps(data))
+
+    # -------------------------
+    # Impression Tracking
+    # -------------------------
+
+    def log_impressions(self, placements: List[SponsoredPlacement]):
+        for p in placements:
+            p.impressions += 1
+        self.db.commit()
+
+    # -------------------------
+    # Public API
+    # -------------------------
+
+    def get_sponsored_for_page(
+        self,
+        page: str,
+        university: Optional[str],
+        subject: Optional[str],
+        region: Optional[str],
+        limit: int = 5
+    ) -> Dict:
+
+        payload = {
+            "page": page,
+            "university": university,
+            "subject": subject,
+            "region": region,
+            "limit": limit
+        }
+
+        cache_key = f"sponsored:{_hash_request(payload)}"
+        cached = self.get_cached(cache_key)
+        if cached:
+            return cached
+
+        query = self._base_placement_query()
+        query = self.apply_targeting(query, page, university, subject, region)
+
+        placements = query.all()
+
+        if not placements:
+            return {"placements": [], "articles": []}
+
+        ranked = self.rank_placements(placements)
+        selected = ranked[:limit]
+
+        # Fetch sponsored articles
+        article_query = self._base_article_query()
+        articles = article_query.limit(3).all()
+
+        self.log_impressions(selected)
+
+        response = {
+            "placements": [SponsoredPlacementOut.from_orm(p).dict() for p in selected],
+            "articles": [a.to_dict() for a in articles]
+        }
+
+        self.set_cached(cache_key, response)
+        return response
+
+
+# -----------------------------
+# API Endpoint
+# -----------------------------
+
+@router.get("/for-page", response_model=SponsoredResponse)
+def get_sponsored_content(
+    request: Request,
+    page: str = Query(..., description="Page identifier e.g. homepage, rankings, university_profile"),
+    university: Optional[str] = Query(None),
+    subject: Optional[str] = Query(None),
+    region: Optional[str] = Query(None),
+    limit: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    cache: redis.Redis = Depends(get_redis),
+    api_key: str = Depends(verify_api_key)
+):
+    try:
+        service = SponsoredService(db, cache)
+        result = service.get_sponsored_for_page(
+            page=page,
+            university=university,
+            subject=subject,
+            region=region,
+            limit=limit
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Sponsored API error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Sponsored service unavailable")
+
+
+# -----------------------------
+# Models (SQLAlchemy)
+# -----------------------------
+
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text
+from backend.core.database import Base
+
+class SponsoredPlacement(Base):
+    __tablename__ = "sponsored_placements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255))
+    description = Column(Text)
+    image_url = Column(String(500))
+    target_page = Column(String(100), default="all")
+    target_university = Column(String(255), default="all")
+    target_subject = Column(String(255), default="all")
+    target_region = Column(String(255), default="all")
+    priority = Column(Integer, default=1)
+    bid_weight = Column(Float, default=1.0)
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=_now)
+
+
+class SponsoredArticle(Base):
+    __tablename__ = "sponsored_articles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255))
+    slug = Column(String(255), unique=True)
+    content = Column(Text)
+    image_url = Column(String(500))
+    sponsor_name = Column(String(255))
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=_now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "slug": self.slug,
+            "image_url": self.image_url,
+            "sponsor_name": self.sponsor_name
+        }
+
+
+# -----------------------------
+# Schemas (Pydantic)
+# -----------------------------
+
+from pydantic import BaseModel
+from typing import List
+
+class SponsoredPlacementOut(BaseModel):
+    id: int
+    title: str
+    description: str
+    image_url: str
+    target_page: str
+    target_university: str
+    target_subject: str
+    target_region: str
+    priority: int
+    bid_weight: float
+
+    class Config:
+        orm_mode = True
+
+
+class SponsoredArticleOut(BaseModel):
+    id: int
+    title: str
+    slug: str
+    image_url: str
+    sponsor_name: str
+
+
+class SponsoredResponse(BaseModel):
+    placements: List[SponsoredPlacementOut]
+    articles: List[SponsoredArticleOut]
+
+
+# -----------------------------
+# Example Redis Config
+# -----------------------------
+
+# redis.conf
+# maxmemory 256mb
+# maxmemory-policy allkeys-lru
+
+
+# -----------------------------
+# Example SQL Migration
+# -----------------------------
+
+"""
+CREATE TABLE sponsored_placements (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255),
+    description TEXT,
+    image_url VARCHAR(500),
+    target_page VARCHAR(100) DEFAULT 'all',
+    target_university VARCHAR(255) DEFAULT 'all',
+    target_subject VARCHAR(255) DEFAULT 'all',
+    target_region VARCHAR(255) DEFAULT 'all',
+    priority INT DEFAULT 1,
+    bid_weight FLOAT DEFAULT 1.0,
+    impressions INT DEFAULT 0,
+    clicks INT DEFAULT 0,
+    start_date TIMESTAMP,
+    end_date TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE sponsored_articles (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255),
+    slug VARCHAR(255) UNIQUE,
+    content TEXT,
+    image_url VARCHAR(500),
+    sponsor_name VARCHAR(255),
+    impressions INT DEFAULT 0,
+    clicks INT DEFAULT 0,
+    start_date TIMESTAMP,
+    end_date TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+# -----------------------------
+# End of Module 34
+# -----------------------------
+GET /api/sponsored/for-page
+page=homepage | rankings | university_profile | calculator | subject
+university=University of Warwick
+subject=Politics
+region=London
+limit=5
+/api/sponsored/for-page?page=university_profile&university=University%20of%20Warwick&subject=Politics&limit=3
+{
+  "placements": [
+    {
+      "id": 1,
+      "title": "Study Finance at LSE",
+      "description": "Top-ranked MSc Finance",
+      "image_url": "...",
+      "priority": 3,
+      "bid_weight": 2.1
+    }
+  ],
+  "articles": [
+    {
+      "id": 2,
+      "title": "How ROI Thinking Changes Career Planning",
+      "slug": "roi-career-planning",
+      "image_url": "...",
+      "sponsor_name": "FuturePath"
+    }
+  ]
+}
+Score = (priority × 3)
+      + bid_weight
+      + recency_bonus
+      + engagement_score
